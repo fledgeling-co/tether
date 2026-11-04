@@ -1,0 +1,18 @@
+name: Feature request
+description: Describe an embedding or transport capability you need.
+labels: [enhancement]
+body:
+  - type: textarea
+    id: usecase
+    attributes:
+      label: What are you building?
+      description: Describe the host, client platforms and user problem.
+    validations:
+      required: true
+  - type: textarea
+    id: outcome
+    attributes:
+      label: Desired behavior
+      description: Include how an embedding application would use the capability.
+    validations:
+      required: true

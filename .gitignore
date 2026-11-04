@@ -1,0 +1,54 @@
+# ONE consolidated root .gitignore (BP §17) — no per-app .gitignore files.
+# Local-state patterns lead with **/ so they reach inside every apps/*.
+node_modules
+**/.env.local
+**/.env*.local
+**/.claude/settings.local.json
+**/.DS_Store
+.vercel
+.turbo
+**/.turbo
+
+# Generated build output (anchored — a bare glob would swallow nested source dirs)
+**/.next/
+**/dist/
+/coverage
+
+# Native (xcodegen generates the .xcodeproj; project.yml is the source of truth)
+apps/macos/*.xcodeproj
+apps/ios/*.xcodeproj
+**/DerivedData/
+**/.build/
+apps/macos/build/
+apps/ios/build/
+
+# Rust
+/target
+
+# Generated Apple binaries and private runtime configuration
+/packages/TetherKit/Artifacts/
+/packages/TetherKit/.swiftpm/
+/.status/
+/planning/evidence/
+/deploy/.env
+**/*.private.json
+**/*.private.json.lock
+
+/deploy/relay.env
+
+/packages/TetherKit/ValidationHost/*.xcodeproj/
+/packages/TetherKit/ValidationHost/Info.plist
+/packages/TetherKit/ValidationHost/IOSInfo.plist
+
+# Generated standalone native examples
+/examples/AppleWorkspace/*.xcodeproj/
+/packages/windows/**/bin/
+/packages/windows/**/obj/
+
+# Android toolchain state and generated binaries
+/packages/android/**/build/
+/packages/android/**/.cxx/
+/packages/android/.gradle/
+/packages/android/.kotlin/
+/packages/android/local.properties
+__pycache__/

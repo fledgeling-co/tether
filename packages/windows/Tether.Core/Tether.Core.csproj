@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable><ImplicitUsings>enable</ImplicitUsings><LangVersion>12</LangVersion>
+    <PackageId>Fledgeling.Tether.Windows</PackageId><Version>0.1.0-frameworks.1</Version>
+    <Description>App-scoped Tether Windows SDK using the shared Rust Noise and PAKE core.</Description>
+    <AllowUnsafeBlocks>false</AllowUnsafeBlocks>
+  </PropertyGroup>
+  <ItemGroup Condition="Exists('$(TetherNativeDir)/tether_ffi.dll')">
+    <Content Include="$(TetherNativeDir)/tether_ffi.dll" Link="tether_ffi.dll" CopyToOutputDirectory="PreserveNewest" Pack="true" PackagePath="runtimes/win-x64/native" />
+    <Content Include="$(TetherNativeDir)/tether.exe" Link="tether.exe" CopyToOutputDirectory="PreserveNewest" Pack="true" PackagePath="tools/win-x64" Condition="Exists('$(TetherNativeDir)/tether.exe')" />
+  </ItemGroup>
+  <ItemGroup><None Include="../buildTransitive/Fledgeling.Tether.Windows.targets" Pack="true" PackagePath="buildTransitive" /></ItemGroup>
+  <PropertyGroup><PackageLicenseFile>LICENSE</PackageLicenseFile></PropertyGroup>
+  <ItemGroup><None Include="../../../LICENSE" Pack="true" PackagePath="/" /><None Include="../../../THIRD_PARTY_NOTICES.txt" Pack="true" PackagePath="/" /></ItemGroup>
+  <Target Name="TetherRequireNativePackage" BeforeTargets="GenerateNuspec">
+    <Error Condition="!Exists('$(TetherNativeDir)/tether_ffi.dll')" Text="Tether packaging requires the real Windows x64 tether_ffi.dll. Run scripts/windows/build.ps1 first." />
+    <Error Condition="!Exists('$(TetherNativeDir)/tether.exe')" Text="Tether packaging requires the real Windows x64 tether.exe helper." />
+  </Target>
+</Project>

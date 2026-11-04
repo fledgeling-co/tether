@@ -1,0 +1,66 @@
+services:
+  tether:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    environment:
+      TETHER_DOMAIN_SUFFIX: ${TETHER_DOMAIN_SUFFIX:?Set the domain suffix in deploy/relay.env}
+      TETHER_ALLOWED_HOSTS: ${TETHER_ALLOWED_HOSTS:?Set the public host ID allowlist in deploy/relay.env}
+    command: ["--ws-listen", "0.0.0.0:8787", "--tls-listen", "0.0.0.0:8788"]
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    pids_limit: 128
+    mem_limit: 256m
+    cpus: 1.0
+    restart: unless-stopped
+    stop_grace_period: 10s
+    networks: [private]
+
+  caddy:
+    build:
+      context: ..
+      dockerfile: deploy/Caddy.Dockerfile
+    environment:
+      TETHER_DOMAIN_SUFFIX: ${TETHER_DOMAIN_SUFFIX:?Set the domain suffix in deploy/relay.env}
+      TETHER_ACME_EMAIL: ${TETHER_ACME_EMAIL:?Set the certificate contact in deploy/relay.env}
+    ports: ["80:8080"]
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    read_only: true
+    tmpfs: ["/tmp:size=16m,mode=1777"]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    pids_limit: 128
+    mem_limit: 128m
+    restart: unless-stopped
+    networks: [edge, private]
+    depends_on:
+      tether:
+        condition: service_healthy
+
+  edge:
+    image: haproxy:3.2-alpine@sha256:5893840576071e6217cd52ebdcc14f454c6f7a631056fa6f4e0f40d3cac4215b
+    environment:
+      TETHER_DOMAIN_SUFFIX: ${TETHER_DOMAIN_SUFFIX:?Set the domain suffix in deploy/relay.env}
+    ports: ["443:8443"]
+    volumes: ["./haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro"]
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    pids_limit: 128
+    mem_limit: 128m
+    restart: unless-stopped
+    networks: [edge, private]
+    depends_on: [caddy, tether]
+
+networks:
+  edge: {}
+  private:
+    internal: true
+
+volumes:
+  caddy-data: {}
+  caddy-config: {}

@@ -1,0 +1,103 @@
+name: TetherWorkspace
+options:
+  deploymentTarget:
+    macOS: "15.0"
+    iOS: "18.0"
+packages:
+  TetherKit:
+    path: ../../packages/TetherKit
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    GENERATE_INFOPLIST_FILE: YES
+    CODE_SIGNING_ALLOWED: YES
+    CODE_SIGN_STYLE: Manual
+    CODE_SIGN_IDENTITY: "-"
+    ENABLE_HARDENED_RUNTIME: YES
+targets:
+  TetherWorkspaceMac:
+    type: application
+    platform: macOS
+    sources: [Sources]
+    dependencies:
+      - package: TetherKit
+        product: TetherUI
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: app.fledgeling.tether.workspace.mac
+        INFOPLIST_KEY_CFBundleDisplayName: Tether Workspace
+  TetherWorkspaceIOS:
+    type: application
+    platform: iOS
+    sources: [Sources]
+    dependencies:
+      - package: TetherKit
+        product: TetherUI
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: app.fledgeling.tether.workspace.ios
+        INFOPLIST_KEY_CFBundleDisplayName: Tether Workspace
+        INFOPLIST_KEY_UILaunchScreen_Generation: YES
+        INFOPLIST_KEY_NSLocalNetworkUsageDescription: Connect to paired Tether hosts on your private network.
+        INFOPLIST_KEY_NSCameraUsageDescription: Scan the temporary pairing invitation shown by your host.
+        TARGETED_DEVICE_FAMILY: "1,2"
+        "EXCLUDED_ARCHS[sdk=iphonesimulator*]": x86_64
+  TetherWorkspaceDuo:
+    type: application
+    platform: iOS
+    sources: [Sources]
+    dependencies:
+      - package: TetherKit
+        product: TetherUI
+      - package: TetherKit
+        product: TetherDuoUI
+    settings:
+      base:
+        OTHER_SWIFT_FLAGS: "$(inherited) -DTETHER_DUO_UI"
+        PRODUCT_BUNDLE_IDENTIFIER: app.fledgeling.tether.workspace.duo
+        INFOPLIST_KEY_CFBundleDisplayName: Tether Workspace
+        INFOPLIST_KEY_UILaunchScreen_Generation: YES
+        INFOPLIST_KEY_NSLocalNetworkUsageDescription: Connect to paired Tether hosts on your private network.
+        INFOPLIST_KEY_NSCameraUsageDescription: Scan the temporary pairing invitation shown by your host.
+        TARGETED_DEVICE_FAMILY: "1,2"
+        "EXCLUDED_ARCHS[sdk=iphonesimulator*]": x86_64
+  TetherWorkspaceMacUITests:
+    type: bundle.ui-testing
+    platform: macOS
+    sources: [Tests]
+    dependencies:
+      - target: TetherWorkspaceMac
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: app.fledgeling.tether.workspace.mac.uitests
+        TEST_TARGET_NAME: TetherWorkspaceMac
+  TetherWorkspaceIOSUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources: [Tests]
+    dependencies:
+      - target: TetherWorkspaceIOS
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: app.fledgeling.tether.workspace.ios.uitests
+        TEST_TARGET_NAME: TetherWorkspaceIOS
+        "EXCLUDED_ARCHS[sdk=iphonesimulator*]": x86_64
+schemes:
+  TetherWorkspaceMac:
+    build:
+      targets:
+        TetherWorkspaceMac: all
+        TetherWorkspaceMacUITests: [test]
+    test:
+      targets: [TetherWorkspaceMacUITests]
+  TetherWorkspaceIOS:
+    build:
+      targets:
+        TetherWorkspaceIOS: all
+        TetherWorkspaceIOSUITests: [test]
+    test:
+      targets: [TetherWorkspaceIOSUITests]
+  TetherWorkspaceDuo:
+    build:
+      targets:
+        TetherWorkspaceDuo: all

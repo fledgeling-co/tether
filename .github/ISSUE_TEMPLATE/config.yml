@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Report a security vulnerability privately
+    url: https://github.com/fledgeling-co/tether/security/advisories/new
+    about: Use a private advisory for vulnerabilities. Do not put credentials or pairing codes in public issues.

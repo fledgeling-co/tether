@@ -1,0 +1,12 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType><TargetFramework>net10.0-windows10.0.19041.0</TargetFramework><TargetPlatformMinVersion>10.0.17763.0</TargetPlatformMinVersion>
+    <UseWinUI>true</UseWinUI><EnableWindowsTargeting>true</EnableWindowsTargeting><WindowsPackageType>None</WindowsPackageType><WindowsAppSDKSelfContained>true</WindowsAppSDKSelfContained>
+    <Platforms>x64</Platforms><Platform>x64</Platform><RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <Nullable>enable</Nullable><ImplicitUsings>enable</ImplicitUsings><LangVersion>12</LangVersion>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+  </PropertyGroup>
+  <ItemGroup><PackageReference Include="Microsoft.WindowsAppSDK" Version="2.6.5" /><PackageReference Include="Microsoft.Windows.SDK.BuildTools" Version="10.0.26100.4654" /></ItemGroup>
+  <ItemGroup><ProjectReference Include="../Tether.WinUI/Tether.WinUI.csproj" /></ItemGroup>
+  <ItemGroup Condition="Exists('$(TetherNativeDir)/tether_ffi.dll')"><Content Include="$(TetherNativeDir)/tether_ffi.dll" Link="tether_ffi.dll" CopyToOutputDirectory="PreserveNewest" /><Content Include="$(TetherNativeDir)/tether.exe" Link="tether.exe" CopyToOutputDirectory="PreserveNewest" /></ItemGroup>
+</Project>

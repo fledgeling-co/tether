@@ -1,0 +1,22 @@
+{
+	admin off
+	email {$TETHER_ACME_EMAIL}
+	http_port 8080
+	https_port 8443
+}
+
+relay.{$TETHER_DOMAIN_SUFFIX} {
+	tls {
+		protocols tls1.3
+	}
+	header Strict-Transport-Security "max-age=31536000"
+	@relay path /v1/relay /healthz
+	handle @relay {
+		reverse_proxy tether:8787 {
+			stream_close_delay 5s
+		}
+	}
+	handle {
+		respond "Not found" 404
+	}
+}

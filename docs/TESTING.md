@@ -1,0 +1,15 @@
+# Testing
+
+Run `scripts/gate.sh` for formatting, strict Clippy, all Rust tests and the workspace build. Run `cargo audit --json` for dependency advisories. Build the Apple XCFramework with `scripts/build-xcframework.sh`, then run `swift test --package-path packages/TetherKit --jobs 2` and the live SDK fixture `python3 packages/TetherKit/Tests/Fixtures/run_live.py`.
+
+The tests exercise PAKE confirmation and channel binding, static peer pins, scope isolation, replay refusal, ciphertext limits, host registration and attachment tickets, admission and lifecycle bounds, actual relay traffic, TCP half-close, UDP packet boundaries, service permissions, revocation and interrupted pairing. The Swift fixtures use real Rust hosts and a relay with synthetic profiles; they clean up their own processes and private files.
+
+The TLS ingress integration observes the origin certificate and application payload through the forwarding path. MCP Router's separate integration also exercises its real running TLS listener and signed phone requests. Both can run on loopback. Neither is a physical-iPhone or public-internet test.
+
+Deployment checks use pinned container images, local unpublished ports, nonroot/read-only execution, health checks and graceful shutdown. DNS, public certificate issuance, a live cellular connection and screen-sharing throughput remain separate acceptance checks. The public [validation record](VALIDATION.md) separates local checks from deployment and device acceptance.
+
+Run the provisioned native Mac Keychain fixture with `python3 scripts/validation/macos-keychain.py --help`. Supply a Mac development profile, its installed certificate fingerprint, the expected Apple team, the governor wrapper and a fresh results directory. The script checks the profile before building and requires eight native phases, six absent test accounts and no cleanup errors. The Mac must be unlocked; the fixture never approves an authentication prompt.
+
+On Windows, `scripts/windows/verify-native-ui.ps1` runs the sample against a fresh scratch profile and collects external UI Automation names and own-window frames. Its two row-identity checks cover reconnect and owner refresh. It preserves the foreground window and does not establish keyboard actuation or screen-reader speech.
+
+On Android, build the native targets and run `gradle --no-daemon --max-workers=2 :tether-core:testDebugUnitTest :tether-ui:testDebugUnitTest :tether-core:assembleDebugAndroidTest :sample:assembleDebugAndroidTest` from `packages/android`. The native host/relay fixture is `python3 scripts/verify-android-live.py --help`; it requires a task-owned emulator, the Core test APK and a built Mac helper. It refuses an existing test package, uses synthetic profiles, and removes its own packages, port reversals and host processes. The sample's separate instrumentation suite covers compact/wide Compose flows with synthetic UI fixtures. Hosted CI compiles these SDKs and runs unit tests; it does not infer emulator or physical-device acceptance.

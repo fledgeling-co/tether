@@ -1,0 +1,4 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- Test-only cleartext carrier; SDK validation still restricts ws to explicit loopback testing. -->
+    <application android:usesCleartextTraffic="true" />
+</manifest>

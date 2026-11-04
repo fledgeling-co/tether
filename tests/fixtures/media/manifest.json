@@ -1,0 +1,16 @@
+{
+  "purpose": "Synthetic encoded H264 video and Opus audio for byte-exact packet transport checks; no live capture or decoder test",
+  "generator": "ffmpeg version 8.0.1 Copyright (c) 2000-2025 the FFmpeg developers",
+  "video": "testsrc2 64x64 10fps 0.3s, libx264 ultrafast yuv420p threads1",
+  "audio": "440Hz sine 48kHz 0.2s, libopus 24kbit/s threads1",
+  "files": {
+    "video.h264": {
+      "bytes": 4392,
+      "sha256": "d8edd431124b9dc61f84fd064f682df6a0b7d8cc43d148d4a4c9d125f31b0a55"
+    },
+    "audio.ogg": {
+      "bytes": 856,
+      "sha256": "3233e740c0587d1cd845430ccbf0ed1c7c1f58bcb938e21dd18cc0c4b1a25512"
+    }
+  }
+}

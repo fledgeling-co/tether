@@ -1,0 +1,15 @@
+[package]
+name = "tether-ffi"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.89"
+[lib]
+name = "tether_ffi"
+crate-type = ["staticlib", "cdylib", "rlib"]
+[dependencies]
+tether-core = { path = "../core" }
+tether-media = { path = "../media" }
+tokio = { version = "=1.54.1", features = ["rt-multi-thread", "net", "time", "sync"] }
+serde_json = "1.0"
+base64 = "0.22"
+zeroize = "1.8"

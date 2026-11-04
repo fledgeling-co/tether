@@ -1,0 +1,172 @@
+{
+  "protocol": "tether/1",
+  "scope": "One application ID, separately paired device keys and host-owned fixed loopback service grants",
+  "pairing": {
+    "code": {
+      "length": 8,
+      "alphabet": "0123456789ABCDEFGHJKMNPQRSTVWXYZ",
+      "lifetime_seconds": 300,
+      "attempts": 3,
+      "single_use": true
+    },
+    "authentication": "SPAKE2 confirmations bound to app ID, Noise handshake hash and both static peer keys",
+    "reconnect": "Pinned host key checked before Noise message 3; connection errors never replace trust",
+    "persistence": "Client pending record precedes acknowledgement; host durable commit precedes confirmed reply"
+  },
+  "framing": {
+    "direct": "u32 big-endian ciphertext length then ciphertext",
+    "relay": "One ciphertext record per binary WebSocket message",
+    "max_carrier_bytes": 65536,
+    "max_plaintext_bytes": 16384,
+    "max_control_bytes": 4096
+  },
+  "controls": {
+    "host.status": {
+      "request": {
+        "v": 1,
+        "type": "host.status"
+      },
+      "reply": {
+        "v": 1,
+        "type": "host.status",
+        "services": [
+          {
+            "id": "api",
+            "kind": "tcp"
+          }
+        ]
+      },
+      "visibility": "Only the requesting peer's granted services"
+    },
+    "peer.leave": {
+      "request": {
+        "v": 1,
+        "type": "peer.leave"
+      },
+      "reply": {
+        "v": 1,
+        "type": "peer.left"
+      },
+      "commit": "Durable self-revocation before acknowledgement; no target peer field"
+    },
+    "media.open": {
+      "request": {
+        "v": 1,
+        "type": "media.open",
+        "service": "video"
+      },
+      "reply": {
+        "v": 1,
+        "type": "media.ready",
+        "lease_id": "base64(16)",
+        "token": "base64(32)",
+        "cert_pin": "base64(SHA256(leafDER))",
+        "port": "uint16",
+        "max_datagram": 1152,
+        "heartbeat_seconds": 2,
+        "lease_ttl_seconds": 5
+      }
+    },
+    "media.heartbeat": {
+      "request": {
+        "v": 1,
+        "type": "media.heartbeat",
+        "lease_id": "base64(16)"
+      },
+      "reply": {
+        "v": 1,
+        "type": "media.alive"
+      }
+    },
+    "media.close": {
+      "request": {
+        "v": 1,
+        "type": "media.close",
+        "lease_id": "base64(16)"
+      },
+      "reply": {
+        "v": 1,
+        "type": "media.closed"
+      }
+    },
+    "error_codes": [
+      "peer_revoked",
+      "service_denied",
+      "service_capacity",
+      "invalid_request",
+      "media_unavailable"
+    ]
+  },
+  "media": {
+    "route": "Explicit private/VPN route; native SDK derives destination from that route and uses only the authenticated offered port",
+    "TLS": "Quinn/rustls TLS1.3, exact Noise-delivered leaf certificate hash plus provider handshake signature verification, no0RTT or resumption, fixed tether.invalid SNI",
+    "authorization": "First reliable QUIC stream is exactly lease_id16 || token32; server replies byte1 after atomic single-use consumption and current grant check",
+    "ownership": "RAM capability belongs to its originating authenticated Noise session; parent close, grant removal, expiry or host stop ends the lease",
+    "datagrams": "No application fragmentation. Actual negotiated maximum is authoritative, at most1200 bytes; initial conservative offer1152 bytes",
+    "queues": "Bounded; excess real-time packets may be rejected or dropped. API writes are never automatically replayed",
+    "cloud": "Reliable WSS packet streams are a separate explicit API; no automatic fallback and no lossy-network latency guarantee"
+  },
+  "owner_pipe": {
+    "transport": "Inherited private parent stdin/stdout pipes; not a public owner socket",
+    "max_request_line_bytes": 2048,
+    "max_reply_line_bytes": 262144,
+    "request": {
+      "v": 1,
+      "request_id": "UUID",
+      "command": "inspect|clients|revoke|pair-code|pairing-status",
+      "expected_app": "APP",
+      "client_id": "64 lowercase hex, revoke only"
+    },
+    "reply": {
+      "event": "reply",
+      "request_id": "same UUID",
+      "ok": true,
+      "payload": "command-specific public state; pairing code only on explicit pair-code reply"
+    },
+    "EOF": "Ends the owned helper even when an owner command is waiting on a configuration lock"
+  },
+  "FFI": {
+    "ABI": "tether_call(readable_UTF8_pointer,length) returns owned UTF8 JSON C string; tether_free exactly once",
+    "max_request_bytes": 131072,
+    "response": "ok boolean plus fields, or a fixed error code; neither request nor response may be logged",
+    "media_commands": [
+      "media.client.start",
+      "media.poll",
+      "media.send",
+      "media.receive",
+      "media.stats",
+      "media.close",
+      "media.receive_wait"
+    ],
+    "media_start": {
+      "address": "original selected route hostname or IP",
+      "port": "authenticated offered uint16",
+      "lease_id": "base64(16)",
+      "token": "base64(32)",
+      "cert_pin": "base64(32)"
+    },
+    "media_handle": "Opaque process-local uint64; caller closes after failure, cancellation or completion; never persist/reuse across processes",
+    "media_poll": {
+      "state": "connecting|ready|failed|closed",
+      "max_datagram": "present when ready"
+    },
+    "media_receive": {
+      "state": "pending|data|failed|closed",
+      "data": "base64 packet when data"
+    },
+    "media_stats": [
+      "rtt_ms",
+      "bytes_sent",
+      "bytes_received",
+      "packets_sent",
+      "packets_received",
+      "dropped"
+    ],
+    "media_receive_wait": {
+      "handle": "process-local uint64",
+      "timeout_ms": "0..100",
+      "threading": "Caller thread may wait; native wrappers use a dedicated blocking queue or thread-pool task, never the UI/cooperative executor",
+      "bounds": "One waiter per handle; data, close or timeout wakes it; no global registry lock held"
+    }
+  }
+}

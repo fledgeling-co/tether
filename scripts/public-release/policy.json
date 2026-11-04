@@ -1,0 +1,171 @@
+{
+  "schema": "tether.public-source-policy/1",
+  "files": [
+    ".gitignore",
+    ".dockerignore",
+    "Cargo.toml",
+    "Cargo.lock",
+    "Dockerfile",
+    "LICENSE",
+    "THIRD_PARTY_NOTICES.txt",
+    "README.md",
+    "SECURITY.md",
+    "CONTRIBUTING.md",
+    "CHANGELOG.md",
+    "packages/TetherKit/Package.swift",
+    "packages/TetherKit/README.md",
+    "design/tether-workspace.html",
+    "design/tokens.json",
+    "Package.swift"
+  ],
+  "directories": [
+    "crates",
+    "packages/TetherKit/Sources",
+    "packages/TetherKit/Tests",
+    "packages/TetherKit/ValidationHost",
+    "packages/windows",
+    "packages/android",
+    "examples",
+    "deploy",
+    "licenses",
+    "scripts",
+    ".github",
+    "docs/assets"
+  ],
+  "documentation": [
+    "docs/ADAPTING.md",
+    "docs/ARCHITECTURE.md",
+    "docs/DEPLOYMENT.md",
+    "docs/FRAMEWORKS.md",
+    "docs/LAUNCH.md",
+    "docs/TESTING.md",
+    "docs/WINDOWS.md",
+    "docs/ANDROID.md",
+    "docs/UI.md",
+    "docs/protocol-v1.json",
+    "docs/INSTALLING.md",
+    "docs/NATIVE_UI.md",
+    "docs/VALIDATION.md"
+  ],
+  "required": [
+    "README.md",
+    "LICENSE",
+    "SECURITY.md",
+    "CONTRIBUTING.md",
+    "THIRD_PARTY_NOTICES.txt",
+    "Cargo.toml",
+    "Cargo.lock",
+    "crates/ffi/include/tether.h",
+    "packages/TetherKit/Package.swift",
+    "packages/windows/Tether.Core/Tether.Core.csproj",
+    "packages/windows/Tether.WinUI/Tether.WinUI.csproj",
+    "packages/android/tether-core/build.gradle.kts",
+    "packages/android/tether-ui/build.gradle.kts",
+    ".github/workflows/ci.yml",
+    "Package.swift",
+    "scripts/public-release/export.py",
+    "scripts/public-release/policy.json",
+    "scripts/public-release/selftest.py"
+  ],
+  "excludeDirectoryNames": [
+    ".git",
+    ".gradle",
+    ".idea",
+    ".build",
+    ".swiftpm",
+    ".cxx",
+    "target",
+    "build",
+    "bin",
+    "obj",
+    "Artifacts",
+    "DerivedData",
+    "node_modules",
+    "__pycache__"
+  ],
+  "excludeSuffixes": [
+    ".private.json",
+    ".private.json.lock",
+    ".pem",
+    ".key",
+    ".p12",
+    ".pfx",
+    ".provisionprofile",
+    ".mobileprovision",
+    ".keystore",
+    ".jks",
+    ".xcresult",
+    ".xcarchive",
+    ".ipa",
+    ".apk",
+    ".aab",
+    ".aar",
+    ".a",
+    ".o",
+    ".so",
+    ".dylib",
+    ".dll",
+    ".exe",
+    ".nupkg",
+    ".zip",
+    ".class"
+  ],
+  "excludeFileNames": [
+    "local.properties",
+    "relay.env",
+    ".env",
+    ".DS_Store",
+    "Info.plist",
+    "IOSInfo.plist"
+  ],
+  "excludePathPrefixes": [
+    ".status/",
+    "planning/",
+    ".claude/",
+    ".slipway/",
+    ".husky/",
+    "docs/features-to-triage/"
+  ],
+  "binarySources": {
+    "tests/fixtures/media/audio.ogg": "3233e740c0587d1cd845430ccbf0ed1c7c1f58bcb938e21dd18cc0c4b1a25512",
+    "tests/fixtures/media/video.h264": "d8edd431124b9dc61f84fd064f682df6a0b7d8cc43d148d4a4c9d125f31b0a55"
+  },
+  "extraFiles": [
+    "tests/fixtures/media/manifest.json"
+  ],
+  "credentialFixtureExemptions": [
+    {
+      "path": "crates/runtime/tests/network.rs",
+      "sha256": "b065e51f9f24dfe72a45f3beff9d2bd28c4f443c5ada9c911ed9daa116fab802",
+      "reason": "Synthetic URL credential rejection fixture"
+    },
+    {
+      "path": "packages/TetherKit/Tests/TetherKitTests/HostControllerTests.swift",
+      "sha256": "411eb2a85381b4a2e6ee9422c77b1283cbeb0f47886d9c29b6f2fb95c36422bf",
+      "reason": "Synthetic URL credential rejection fixture"
+    },
+    {
+      "path": "packages/TetherKit/Tests/TetherUITests/InvitationTests.swift",
+      "sha256": "411eb2a85381b4a2e6ee9422c77b1283cbeb0f47886d9c29b6f2fb95c36422bf",
+      "reason": "Synthetic URL credential rejection fixture"
+    },
+    {
+      "path": "packages/android/tether-core/src/test/java/app/fledgeling/tether/CoreTests.kt",
+      "sha256": "c16ccc98b92afaa2dbf13d61400e123ad1d902883072533b8f67558eba8f2235",
+      "reason": "Synthetic Android URL credential rejection fixture"
+    }
+  ],
+  "maximumFileBytes": 8388608,
+  "notes": [
+    "Publish a fresh source snapshot, never the local development history.",
+    "Generated SDK binaries, private profiles, owner reports and local acceptance receipts are excluded.",
+    "Image assets under docs/assets are source documentation assets; they require manual visual privacy review.",
+    "No wildcard exemption permits credentials in a test file. Only exact path plus fixture-value digest is accepted."
+  ],
+  "excludeDirectorySuffixes": [
+    ".xcodeproj",
+    ".xcworkspace",
+    ".xcresult",
+    ".xcarchive"
+  ]
+}

@@ -1,0 +1,15 @@
+{
+  "winapi-i686-pc-windows-gnu-0.4.0": {
+    "source": "https://raw.githubusercontent.com/retep998/winapi-rs/0.3/LICENSE-MIT",
+    "sha256": "ce7bc3499fee93d5022ef430d5e4201e79a6d9154f3974e42f41349f0569e09b"
+  },
+  "winapi-x86_64-pc-windows-gnu-0.4.0": {
+    "source": "https://raw.githubusercontent.com/retep998/winapi-rs/0.3/LICENSE-MIT",
+    "sha256": "ce7bc3499fee93d5022ef430d5e4201e79a6d9154f3974e42f41349f0569e09b"
+  },
+  "yasna-0.5.2": {
+    "copyright": "packaged yasna-0.5.2/src/lib.rs lines1-7",
+    "selectedLicense": "Apache-2.0",
+    "licenseText": "standard Apache2 text from packaged serde/LICENSE-APACHE"
+  }
+}

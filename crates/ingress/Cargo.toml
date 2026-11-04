@@ -1,0 +1,27 @@
+[package]
+name = "tether-ingress"
+version = "0.1.0"
+edition = "2021"
+publish = false
+[dependencies]
+tether = { path = "../runtime" }
+tether-relay = { path = "../relay" }
+tokio = { version = "=1.54.1", features = ["full"] }
+futures-util = { version = "0.3", features = ["sink"] }
+tokio-tungstenite = { version = "=0.26.2", features = ["rustls-tls-webpki-roots"] }
+
+axum = { version = "=0.8.4", features = ["ws"] }
+clap = { version = "=4.5.26", features = ["derive", "env"] }
+url = "2.5"
+
+[[bin]]
+name = "tether-server"
+path = "src/main.rs"
+
+[dev-dependencies]
+base64 = "=0.22.1"
+ed25519-dalek = "=2.2.0"
+rand = "=0.8.6"
+rustls = { version = "=0.23.46", default-features = false, features = ["std", "ring", "tls12"] }
+tokio-rustls = { version = "=0.26.4", default-features = false, features = ["ring", "tls12"] }
+rcgen = "=0.13.2"

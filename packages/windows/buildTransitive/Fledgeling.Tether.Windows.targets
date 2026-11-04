@@ -1,0 +1,5 @@
+<Project>
+  <ItemGroup>
+    <Content Include="$(MSBuildThisFileDirectory)..\tools\win-x64\tether.exe" Link="tether.exe" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" Condition="Exists('$(MSBuildThisFileDirectory)..\tools\win-x64\tether.exe')" />
+  </ItemGroup>
+</Project>

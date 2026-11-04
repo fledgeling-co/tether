@@ -1,0 +1,145 @@
+name: SDK checks
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sdk-checks-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_BUILD_JOBS: 2
+  TETHER_BUILD_JOBS: 2
+  RUST_BACKTRACE: 1
+
+jobs:
+  source:
+    name: Public source policy
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.13'
+      - run: python3 scripts/public-release/selftest.py
+      - name: Check public source and history
+        run: python3 scripts/public-release/export.py validate --repo . --history --report "$RUNNER_TEMP/public-source-audit.json"
+
+  rust:
+    name: Rust protocol and runtime
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Select Rust
+        run: |
+          rustup toolchain install 1.89.0 --profile minimal --component clippy,rustfmt
+          rustup default 1.89.0
+      - run: bash scripts/gate.sh
+
+  apple:
+    name: macOS and iOS SDKs
+    runs-on: macos-26
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Select Rust targets
+        run: |
+          rustup toolchain install 1.89.0 --profile minimal
+          rustup default 1.89.0
+          rustup target add aarch64-apple-darwin x86_64-apple-darwin aarch64-apple-ios aarch64-apple-ios-sim
+      - name: Build native Apple bridge
+        run: bash scripts/build-xcframework.sh
+      - name: Refuse contributor paths in native Apple artifacts
+        run: find packages/TetherKit/Artifacts/TetherFFI.xcframework -name '*.a' -print0 | xargs -0 python3 scripts/check-binary-paths.py
+      - name: Check Swift SDK and base native UI
+        run: swift test --package-path packages/TetherKit --jobs 2
+      - name: Check remote package facade using the locally built bridge
+        run: swift build --product TetherUI --jobs 2
+      - name: Build iOS embedding example
+        run: |
+          brew install xcodegen
+          xcodegen generate --spec examples/AppleWorkspace/project.yml
+          xcodebuild -project examples/AppleWorkspace/TetherWorkspace.xcodeproj -scheme TetherWorkspaceIOS -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' -derivedDataPath "$RUNNER_TEMP/tether-ios" -jobs 2 CODE_SIGNING_ALLOWED=NO build
+      # Hosted builds prove compilation, not physical-device, Keychain or Duo-pose acceptance.
+
+  windows:
+    name: Windows SDK and WinUI package
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.13'
+      - uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
+        with:
+          dotnet-version: '10.0.403'
+      - name: Select Rust
+        shell: pwsh
+        run: |
+          rustup toolchain install 1.89.0 --profile minimal
+          rustup default 1.89.0
+      - name: Build and test native SDKs
+        shell: pwsh
+        run: ./scripts/windows/build.ps1 -Configuration Release -OutputDirectory "$env:RUNNER_TEMP/tether-windows"
+      - name: Check fresh NuGet consumer and missing-native controls
+        shell: pwsh
+        run: ./scripts/windows/verify-packages.ps1 -ArtifactsDirectory "$env:RUNNER_TEMP/tether-windows"
+      - name: Refuse contributor paths in Windows artifacts
+        shell: pwsh
+        run: |
+          $packages = @(Get-ChildItem "$env:RUNNER_TEMP/tether-windows/nuget" -Filter '*.nupkg' -File)
+          if ($packages.Count -ne 2) { throw 'Expected Core and WinUI packages' }
+          & python scripts/check-binary-paths.py @($packages.FullName)
+          if ($LASTEXITCODE) { throw 'Windows binary path check failed' }
+      # The hosted shell does not establish interactive WinUI or screen-reader operation.
+
+  android:
+    name: Android SDK and Compose embedding example
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@0723195856401067f7a2779048b490ace7a47d7c # v5
+        with:
+          gradle-version: '9.4.1'
+      - name: Select Rust targets
+        run: |
+          rustup toolchain install 1.89.0 --profile minimal
+          rustup default 1.89.0
+          rustup target add aarch64-linux-android x86_64-linux-android
+      - name: Install isolated hosted Android toolchain
+        run: |
+          sdkmanager 'platforms;android-36' 'build-tools;36.0.0' 'ndk;27.1.12297006' 'cmake;3.22.1'
+          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/27.1.12297006" >> "$GITHUB_ENV"
+      - name: Build shared native transport
+        run: bash scripts/build-android.sh
+      - name: Check Kotlin SDK and compile native UI
+        working-directory: packages/android
+        run: gradle --no-daemon --max-workers=2 :tether-core:testDebugUnitTest :tether-ui:testDebugUnitTest :tether-core:assembleRelease :tether-ui:assembleRelease :tether-core:publish :tether-ui:publish :sample:assembleDebug
+      - name: Refuse contributor paths in Android artifacts
+        run: python3 scripts/check-binary-paths.py packages/android/tether-core/build/outputs/aar/tether-core-release.aar packages/android/tether-ui/build/outputs/aar/tether-ui-release.aar
+      # No emulator or physical Android acceptance is inferred from these compile/unit checks.

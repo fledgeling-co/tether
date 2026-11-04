@@ -1,0 +1,10 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup><TargetFramework>net10.0</TargetFramework><Nullable>enable</Nullable><ImplicitUsings>enable</ImplicitUsings><LangVersion>12</LangVersion><IsPackable>false</IsPackable></PropertyGroup>
+  <ItemGroup><PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.11.1" /><PackageReference Include="xunit" Version="2.9.2" /><PackageReference Include="xunit.runner.visualstudio" Version="2.8.2" /></ItemGroup>
+  <ItemGroup><ProjectReference Include="../Tether.Core/Tether.Core.csproj" /></ItemGroup>
+  <ItemGroup Condition="Exists('$(TetherNativeDir)/tether_ffi.dll')"><Content Include="$(TetherNativeDir)/tether_ffi.dll" Link="tether_ffi.dll" CopyToOutputDirectory="PreserveNewest" /><Content Include="$(TetherNativeDir)/tether.exe" Link="tether.exe" CopyToOutputDirectory="PreserveNewest" /></ItemGroup>
+  <ItemGroup Condition="Exists('$(TetherNativeDir)/tether-relay.exe')"><Content Include="$(TetherNativeDir)/tether-relay.exe" Link="tether-relay.exe" CopyToOutputDirectory="PreserveNewest" /></ItemGroup>
+  <ItemGroup><None Include="../../../tests/fixtures/media/audio.ogg" Link="fixtures/audio.ogg" CopyToOutputDirectory="PreserveNewest" /><None Include="../../../tests/fixtures/media/video.h264" Link="fixtures/video.h264" CopyToOutputDirectory="PreserveNewest" /></ItemGroup>
+  <ItemGroup><ProjectReference Include="../Tether.HelperFixture/Tether.HelperFixture.csproj" ReferenceOutputAssembly="false" /></ItemGroup>
+  <Target Name="CopyOwnedProcessFixture" AfterTargets="Build"><ItemGroup><OwnedFixture Include="../Tether.HelperFixture/bin/$(Configuration)/net10.0/tether-helper-fixture*" /></ItemGroup><Copy SourceFiles="@(OwnedFixture)" DestinationFolder="$(OutDir)" /></Target>
+</Project>

@@ -1,0 +1,102 @@
+name: TetherSDKValidation
+options:
+  deploymentTarget:
+    macOS: "15.0"
+    iOS: "18.0"
+packages:
+  TetherKit:
+    path: ..
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    DEVELOPMENT_TEAM: "$(TETHER_VALIDATION_TEAM)"
+    CODE_SIGN_STYLE: Manual
+    CODE_SIGN_IDENTITY: "Apple Development"
+    ENABLE_HARDENED_RUNTIME: YES
+    ENABLE_TESTABILITY: YES
+    GENERATE_INFOPLIST_FILE: YES
+targets:
+  TetherValidationHost:
+    type: application
+    platform: macOS
+    sources:
+      - Sources/macOS
+    dependencies:
+      - package: TetherKit
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: app.fledgeling.tether.validation
+        PROVISIONING_PROFILE_SPECIFIER: "$(TETHER_VALIDATION_PROFILE)"
+        CODE_SIGN_ENTITLEMENTS: ValidationHost.entitlements
+        INFOPLIST_KEY_CFBundleDisplayName: Tether SDK Validation
+        INFOPLIST_KEY_LSUIElement: YES
+  TetherValidationTests:
+    type: bundle.unit-test
+    platform: macOS
+    sources:
+      - path: ../Tests/TetherKitTests/NativeKeychainTests.swift
+    dependencies:
+      - target: TetherValidationHost
+      - package: TetherKit
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: app.fledgeling.tether.validation.tests
+        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/TetherValidationHost.app/Contents/MacOS/TetherValidationHost"
+        BUNDLE_LOADER: "$(TEST_HOST)"
+  TetherValidationIOSHost:
+    type: application
+    platform: iOS
+    sources:
+      - Sources/iOS
+    dependencies:
+      - package: TetherKit
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: app.fledgeling.tether.validation.ios
+        CODE_SIGN_STYLE: Automatic
+        CODE_SIGN_IDENTITY: "-"
+        CODE_SIGNING_ALLOWED: YES
+        ENABLE_HARDENED_RUNTIME: NO
+        CODE_SIGN_ENTITLEMENTS: ValidationIOSHost.entitlements
+        INFOPLIST_KEY_CFBundleDisplayName: Tether SDK Validation
+        INFOPLIST_KEY_UILaunchScreen_Generation: YES
+  TetherValidationIOSTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: ../Tests/TetherKitTests/NativeKeychainTests.swift
+    dependencies:
+      - target: TetherValidationIOSHost
+      - package: TetherKit
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: app.fledgeling.tether.validation.ios.tests
+        CODE_SIGN_STYLE: Automatic
+        CODE_SIGN_IDENTITY: "-"
+        CODE_SIGNING_ALLOWED: YES
+        ENABLE_HARDENED_RUNTIME: NO
+        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/TetherValidationIOSHost.app/TetherValidationIOSHost"
+        BUNDLE_LOADER: "$(TEST_HOST)"
+schemes:
+  TetherSDKValidation:
+    build:
+      targets:
+        TetherValidationHost: all
+        TetherValidationTests: [test]
+    test:
+      targets:
+        - TetherValidationTests
+      environmentVariables:
+        TETHER_TEST_REAL_KEYCHAIN: "1"
+        TETHER_KEYCHAIN_TEST_EVIDENCE: "$(TETHER_VALIDATION_EVIDENCE)"
+  TetherSDKValidationIOS:
+    build:
+      targets:
+        TetherValidationIOSHost: all
+        TetherValidationIOSTests: [test]
+    test:
+      targets:
+        - TetherValidationIOSTests
+      environmentVariables:
+        TETHER_TEST_REAL_KEYCHAIN: "1"
+        TETHER_KEYCHAIN_TEST_EVIDENCE_DOCUMENTS: "1"

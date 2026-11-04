@@ -1,0 +1,10 @@
+{
+  "verifiedOn": "2026-11-03",
+  "images": {
+    "rust:1.89-bookworm": "sha256:948f9b08a66e7fe01b03a98ef1c7568292e07ec2e4fe90d88c07bb14563c84ff",
+    "gcr.io/distroless/cc-debian12:nonroot": "sha256:9dac0a79194e45a7da0158a9c6da57b217585af0786db3845d1f0ec1a0dd182f",
+    "haproxy:3.2-alpine": "sha256:5893840576071e6217cd52ebdcc14f454c6f7a631056fa6f4e0f40d3cac4215b",
+    "caddy:2.11-alpine": "sha256:e70b164da81ef698b3ad19af799ea6086ce6d9e48ed4079eb9fe26f6fbf14ee5"
+  },
+  "verification": "Docker registry manifest lookup; Caddy and HAProxy images pulled locally. These image pins do not establish an internet deployment or an ongoing vulnerability-free state."
+}

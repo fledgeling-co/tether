@@ -1,0 +1,32 @@
+name: Bug report
+description: Report an SDK, connection or native UI problem.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: "For a security vulnerability, use GitHub's private vulnerability reporting. Keep pairing codes, private keys and host profile contents out of issues and logs."
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Platform
+      options: [macOS, iOS, Windows, Android, Rust or relay]
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Tether version and operating system
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps, expected result and actual result
+      description: Include a small reproducible example and whether the route is private/VPN or cloud.
+    validations:
+      required: true
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Redacted diagnostic output
+      description: Include error types and timestamps. Remove credentials, pairing codes and private profile contents.
