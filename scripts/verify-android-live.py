@@ -77,7 +77,8 @@ try:
  fixture=json.dumps({'appId':app,'port':port,'code':code,'cloud':{'appId':cloud_app,'port':cloud_port,'hostId':host_id,'code':cloud_code}}).encode()
  adb('shell','run-as',package,'tee','files/tether-fixture.json',input=fixture)
  adb('shell','run-as',package,'chmod','600','files/tether-fixture.json')
- result=adb('shell','am','instrument','-w','-r','-e','class','app.fledgeling.tether.CoreInstrumentationTest',package+'/androidx.test.runner.AndroidJUnitRunner',check=False)
+ # The nearby test needs a host whose owner approves; scripts/verify-android-nearby.py runs it.
+ result=adb('shell','am','instrument','-w','-r','-e','class','app.fledgeling.tether.CoreInstrumentationTest','-e','notClass','app.fledgeling.tether.CoreInstrumentationTest#liveRustHostNearbyPairingNeedsBothApprovals',package+'/androidx.test.runner.AndroidJUnitRunner',check=False)
  # AndroidJUnitRunner prints class/test names and assertion failures, never fixture contents.
  log=result.stdout.decode(errors='replace');(args.output/'instrumentation.log').write_text(log)
  if result.returncode!=0 or 'OK (4 tests)' not in log or 'FAILURES!!!' in log:raise RuntimeError('Android native suite did not pass; read instrumentation.log')

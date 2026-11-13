@@ -9,7 +9,7 @@ mkdir -p "$TETHER_DEST"
 TETHER_STAGE="$(mktemp -d "$TETHER_DEST/.helper.XXXXXX")"
 trap 'rm -rf "$TETHER_STAGE"' EXIT
 for TETHER_TARGET in aarch64-apple-darwin x86_64-apple-darwin; do
-  MACOSX_DEPLOYMENT_TARGET=15.0 cargo build --release --locked -p tether --target "$TETHER_TARGET" -j "$TETHER_BUILD_JOBS"
+  MACOSX_DEPLOYMENT_TARGET=14.0 cargo build --release --locked -p tether --target "$TETHER_TARGET" -j "$TETHER_BUILD_JOBS"
 done
 lipo -create target/aarch64-apple-darwin/release/tether target/x86_64-apple-darwin/release/tether -output "$TETHER_STAGE/tether"
 # SDK helpers are development components; the embedding app signs and notarizes its bundle.

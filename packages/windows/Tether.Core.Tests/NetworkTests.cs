@@ -84,6 +84,37 @@ public sealed class NetworkTests
     {await using var stream=await client.OpenServiceAsync(peer,"api",ServiceKind.Tcp,token);await stream.SendAsync(Request,token);using var reply=new MemoryStream();while(reply.Length<Fixture.Response.Length){var bytes=await stream.ReceiveAsync(token);Assert.NotNull(bytes);reply.Write(bytes!);}Assert.Equal(Fixture.Response,reply.ToArray());}
     internal static ushort FreePort(){var listener=new TcpListener(IPAddress.Loopback,0);listener.Start();var port=(ushort)((IPEndPoint)listener.LocalEndpoint).Port;listener.Stop();return port;}
     private static async Task WaitListener(ushort port,CancellationToken token){while(true){token.ThrowIfCancellationRequested();using var tcp=new TcpClient();try{await tcp.ConnectAsync(IPAddress.Loopback,port,token);return;}catch(SocketException){await Task.Delay(20,token);}}}
+    [Fact]public async Task Nearby_pairing_shows_one_code_and_needs_both_approvals()
+    {
+        await using var fixture=await Fixture.Create();using var timeout=new CancellationTokenSource(TimeSpan.FromSeconds(60));var token=timeout.Token;
+        async Task<(NearbyOutcome Outcome,string? Shown,NearbyRequest? Seen)> Run(TetherClient client,bool hostApproves)
+        {
+            string? shown=null;var shownAt=DateTimeOffset.MaxValue;NearbyRequest? seen=null;
+            // Undecided until the code has been up for a moment, as a person reading it would be.
+            var pairing=client.PairNearbyAsync(fixture.Route,"Windows Test","PC",code=>{shown=code;shownAt=DateTimeOffset.UtcNow;return Task.CompletedTask;},null,()=>DateTimeOffset.UtcNow-shownAt>TimeSpan.FromSeconds(1.3)?true:null,token);
+            while(!pairing.IsCompleted)
+            {
+                await fixture.Host.RefreshNearbyAsync(token);var request=fixture.Host.NearbyRequests.FirstOrDefault();
+                if(request!=null){seen=request;if(request.DeviceApproved||!hostApproves){await fixture.Host.DecideNearbyAsync(request,hostApproves,token);break;}}
+                await Task.Delay(100,token);
+            }
+            return(await pairing,shown,seen);
+        }
+        using var declined=fixture.Client("nearby-declined");var refusal=await Run(declined,false);
+        Assert.IsType<NearbyOutcome.Declined>(refusal.Outcome);Assert.Empty(await declined.RecordsAsync(token));
+        using var client=fixture.Client("nearby");var result=await Run(client,true);var paired=Assert.IsType<NearbyOutcome.Paired>(result.Outcome);
+        Assert.NotNull(result.Shown);Assert.Equal(result.Shown,result.Seen!.Code);Assert.Equal("Windows Test",result.Seen.Name);Assert.True(paired.Record.Confirmed);
+        Assert.Equal(new[]{"api","audio"},(await client.StatusAsync(paired.Record,token)).Services.Select(s=>s.Id).OrderBy(s=>s).ToArray());
+        await fixture.Host.RefreshClientsAsync(token);Assert.Equal("Windows Test",Assert.Single(fixture.Host.Clients).Name);
+    }
+    [Fact]public async Task Dns_sd_announcement_is_found_by_the_nearby_browser()
+    {
+        var app="test.dnssd."+Guid.NewGuid().ToString("N")[..8];var port=(ushort)FreePort();
+        using var announcement=new TetherNearbyAnnouncement(app,"Windows Fixture","PC",port);using var browser=new TetherNearbyBrowser(app);browser.Start();
+        using var timeout=new CancellationTokenSource(TimeSpan.FromSeconds(30));NearbyPeer? peer=null;
+        while(peer==null){timeout.Token.ThrowIfCancellationRequested();peer=browser.Peers.FirstOrDefault(p=>p.Port==port);await Task.Delay(200,timeout.Token);}
+        Assert.Equal("Windows Fixture",peer.Name);Assert.Equal("PC",peer.Kind);Assert.NotEmpty(peer.Addresses);
+    }
     private sealed class Fixture : IAsyncDisposable
     {
         internal static readonly byte[] Response=Encoding.ASCII.GetBytes("HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nOK");

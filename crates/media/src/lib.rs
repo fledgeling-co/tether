@@ -31,7 +31,12 @@ pub const LEASE_TTL: Duration = Duration::from_secs(5);
 pub const CONNECT_WAIT: Duration = Duration::from_secs(10);
 const CHECK: Duration = Duration::from_millis(250);
 const ALPN: &[u8] = b"tether-media-v1";
-const QUEUE: usize = 32;
+/// Datagrams held for the application between reads. A video keyframe arrives as a burst of a
+/// hundred or more datagrams, so a smaller queue drops most of it before the app can read.
+pub const RECEIVE_QUEUE: usize = 512;
+/// Bytes of datagrams QUIC holds in each direction for one session.
+const DATAGRAM_BUFFER: usize = 1 << 20;
+const QUEUE: usize = RECEIVE_QUEUE;
 const GLOBAL_LEASES: usize = 64;
 const PEER_LEASES: usize = 8;
 
@@ -99,8 +104,10 @@ fn transport() -> TransportConfig {
         .stream_receive_window(64u32.into())
         .receive_window(128u32.into())
         .send_window(65536)
-        .datagram_receive_buffer_size(Some(32768))
-        .datagram_send_buffer_size(32768)
+        // A video keyframe is a burst of a hundred or more datagrams. A 32 KB buffer kept only the
+        // last 28 of them and dropped the rest oldest first, so no keyframe ever arrived whole.
+        .datagram_receive_buffer_size(Some(DATAGRAM_BUFFER))
+        .datagram_send_buffer_size(DATAGRAM_BUFFER)
         .max_idle_timeout(Some(
             Duration::from_secs(5).try_into().expect("fixed duration"),
         ))
@@ -535,7 +542,7 @@ impl Client {
             return Err("media datagrams unavailable".into());
         }
         let incoming = Arc::new(PacketQueue {
-            data: Mutex::new(VecDeque::with_capacity(QUEUE)),
+            data: Mutex::new(VecDeque::with_capacity(64)),
             wake: Condvar::new(),
             closed: AtomicBool::new(false),
         });

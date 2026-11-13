@@ -42,13 +42,24 @@ internal sealed class Session(ICarrier carrier,NativeHandle cipher,byte[] peer,b
     }
     internal async Task SendControl(string type,CancellationToken token,Dictionary<string,object?>? fields=null)
     {var value=fields??new();value["v"]=1;value["type"]=type;var data=JsonSerializer.SerializeToUtf8Bytes(value);try{if(data.Length>4096)throw new TetherException(TetherError.Protocol);await Send(data,token);}finally{CryptographicOperations.ZeroMemory(data);}}
-    internal async Task<NativeResponse> Control(string expected,CancellationToken token)
+    /// <summary>Sends a record a shared Rust flow produced; it already carries <c>v</c>.</summary>
+    internal async Task SendRecord(JsonElement record,CancellationToken token)
+    {var data=JsonSerializer.SerializeToUtf8Bytes(record);try{if(data.Length>4096)throw new TetherException(TetherError.Protocol);await Send(data,token);}finally{CryptographicOperations.ZeroMemory(data);}}
+    /// <summary>One control record for a shared flow to judge, host errors included.</summary>
+    internal async Task<NativeResponse> Record(CancellationToken token)
+    {
+        using var d=Deadline.Start(token);byte[]? bytes=await Receive(d.Token);
+        try{if(bytes.Length>4096)throw new TetherException(TetherError.Protocol);var result=new NativeResponse(bytes);bytes=null;return result;}
+        catch(TetherException){throw;}catch{throw new TetherException(TetherError.Protocol);}finally{if(bytes!=null)CryptographicOperations.ZeroMemory(bytes);}
+    }
+    internal Task<NativeResponse> Control(string expected,CancellationToken token)=>Control(new[]{expected},token);
+    internal async Task<NativeResponse> Control(string[] expected,CancellationToken token)
     {
         using var d=Deadline.Start(token);byte[]? bytes=await Receive(d.Token);
         try {if(bytes.Length>4096)throw new TetherException(TetherError.Protocol);var result=new NativeResponse(bytes);bytes=null;try{
             var root=result.RootElement;if(root.GetProperty("v").GetInt32()!=1)throw new TetherException(TetherError.Protocol);var type=root.GetProperty("type").GetString();
-            if(type=="error")throw new TetherException(root.TryGetProperty("code",out var code)?code.GetString()switch{"peer_revoked"=>TetherError.Revoked,"service_denied"=>TetherError.ServiceRefused,"service_capacity"=>TetherError.Capacity,"media_unavailable"=>TetherError.MediaUnavailable,_=>TetherError.Protocol}:TetherError.Protocol);
-            if(type!=expected)throw new TetherException(TetherError.Protocol);return result;
+            if(type=="error")throw new TetherException(root.TryGetProperty("code",out var code)?code.GetString()switch{"peer_revoked"=>TetherError.Revoked,"service_denied"=>TetherError.ServiceRefused,"service_capacity"=>TetherError.Capacity,"media_unavailable"=>TetherError.MediaUnavailable,"relay_refused" or "nearby_closed"=>TetherError.NearbyRefused,"paused"=>TetherError.NearbyPaused,"busy"=>TetherError.NearbyBusy,"already_paired"=>TetherError.PairingExists,_=>TetherError.Protocol}:TetherError.Protocol);
+            if(type==null||!expected.Contains(type))throw new TetherException(TetherError.Protocol);return result;
         }catch{result.Dispose();throw;}}
         catch(TetherException){throw;}catch{throw new TetherException(TetherError.Protocol);}finally{if(bytes!=null)CryptographicOperations.ZeroMemory(bytes);}
     }

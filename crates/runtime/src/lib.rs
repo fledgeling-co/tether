@@ -2,6 +2,8 @@ pub mod carrier;
 pub mod client;
 pub mod controls;
 pub mod host;
+pub mod identify;
+pub mod nearby;
 pub mod owner;
 pub mod protocol;
 pub mod storage;

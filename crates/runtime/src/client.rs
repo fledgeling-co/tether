@@ -13,7 +13,7 @@ use std::{
     path::{Path, PathBuf},
     sync::Arc,
 };
-use tether_core::{Identity, Pairing, Role, MAX_PLAINTEXT};
+use tether_core::{Identity, MAX_PLAINTEXT};
 use tokio::{
     net::{TcpListener, TcpStream, UdpSocket},
     sync::{mpsc, Semaphore},
@@ -94,6 +94,10 @@ impl Route {
 }
 
 pub async fn pair(path: &Path, app: &str, route: Route, code: &str) -> Result<()> {
+    use tether_model::{
+        code::CodeClient,
+        nearby::{Action, Outcome},
+    };
     storage::app_id(app)?;
     tether_core::normalize_code(code)?;
     if path.exists() {
@@ -101,31 +105,161 @@ pub async fn pair(path: &Path, app: &str, route: Route, code: &str) -> Result<()
     }
     let identity = Identity::generate()?;
     let mut session = protocol::initiate(route.connect(app).await?, &identity, app, None).await?;
-    let (exchange, element) = Pairing::start(
-        Role::Client,
-        code,
+    let (mut flow, mut actions) =
+        CodeClient::begin(app, code, session.binding, identity.public(), session.peer)?;
+    let mut config = None;
+    loop {
+        let mut next = Vec::new();
+        for action in actions {
+            match action {
+                Action::Send(message) => session.send(message).await?,
+                Action::Receive => next = flow.receive(&session.receive().await?),
+                Action::StorePending => {
+                    config = Some(store_pending(
+                        path,
+                        app,
+                        route.clone(),
+                        &identity,
+                        &session,
+                    )?);
+                    next = flow.stored();
+                }
+                Action::Confirm => storage::confirm_client(
+                    path,
+                    config.as_ref().ok_or("pairing remains pending")?,
+                )?,
+                Action::Outcome(Outcome::Paired) => return Ok(()),
+                Action::Failed(code) => {
+                    return Err(match code.as_str() {
+                        "peer_revoked" => protocol::RemoteError::PeerRevoked.into(),
+                        "pairing_pending" => "pairing remains pending".into(),
+                        _ => "pairing refused".into(),
+                    })
+                }
+                _ => {}
+            }
+        }
+        actions = next;
+    }
+}
+
+/// How a nearby pairing ended. Declined and expired store nothing on either side.
+#[derive(Debug, PartialEq, Eq)]
+pub enum NearbyOutcome {
+    Paired,
+    Declined,
+    Expired,
+}
+
+/// Pairs by comparing a code shown on both devices. `on_code` receives the six digits to show;
+/// `decision` carries this device owner's answer while the host owner decides independently.
+pub async fn pair_nearby(
+    path: &Path,
+    app: &str,
+    route: Route,
+    name: &str,
+    kind: &str,
+    on_code: impl FnOnce(&str),
+    mut decision: tokio::sync::watch::Receiver<Option<bool>>,
+) -> Result<NearbyOutcome> {
+    use tether_model::nearby::{Action, NearbyClient, Outcome};
+    storage::app_id(app)?;
+    if path.exists() {
+        return Err("client configuration already exists; recover pending pairing or choose another private file".into());
+    }
+    let identity = Identity::generate()?;
+    let mut session = protocol::initiate(route.connect(app).await?, &identity, app, None).await?;
+    let started = tokio::time::Instant::now();
+    let now = || started.elapsed().as_millis() as u64;
+    // The watch's value only counts once it changes after this point, so a pre-set answer is ignored.
+    decision.mark_unchanged();
+    let mut current: Option<bool> = None;
+    let read = |decision: &mut tokio::sync::watch::Receiver<Option<bool>>,
+                current: &mut Option<bool>| {
+        let latest = decision.borrow_and_update();
+        if latest.has_changed() {
+            *current = *latest;
+        }
+        *current
+    };
+    let (mut flow, mut actions) = NearbyClient::begin(
         app,
         session.binding,
         identity.public(),
         session.peer,
+        name,
+        kind,
     )?;
-    session
-        .send(json!({"type":"pair.start","v":1,"element":STANDARD.encode(element)}))
-        .await?;
-    let reply = session.receive().await?;
-    if reply["type"] != "pair.reply" || reply["v"] != 1 {
-        return Err("pairing refused".into());
+    let mut on_code = Some(on_code);
+    let mut config = None;
+    loop {
+        let mut next = Vec::new();
+        for action in actions {
+            match action {
+                Action::Send(message) => session.send(message).await?,
+                Action::Receive => {
+                    let message = session.receive().await?;
+                    let now = now();
+                    next = flow.receive(&message, read(&mut decision, &mut current), now);
+                }
+                Action::Wait(ms) => {
+                    if let Ok(Ok(())) =
+                        timeout(std::time::Duration::from_millis(ms), decision.changed()).await
+                    {
+                        current = *decision.borrow_and_update();
+                    }
+                    next = flow.tick(read(&mut decision, &mut current), now());
+                }
+                Action::ShowCode(code) => {
+                    if let Some(show) = on_code.take() {
+                        show(&code)
+                    }
+                    next = flow.shown(read(&mut decision, &mut current), now());
+                }
+                Action::DiscardPending => {
+                    storage::abandon_pending(path, app)?;
+                    config = None;
+                }
+                Action::HostApproved => {}
+                Action::StorePending => {
+                    config = Some(store_pending(
+                        path,
+                        app,
+                        route.clone(),
+                        &identity,
+                        &session,
+                    )?);
+                    next = flow.stored(read(&mut decision, &mut current));
+                }
+                Action::Confirm => {
+                    storage::confirm_client(
+                        path,
+                        config.as_ref().ok_or("pairing remains pending")?,
+                    )?;
+                }
+                Action::Outcome(Outcome::Paired) => return Ok(NearbyOutcome::Paired),
+                Action::Outcome(Outcome::Declined) => return Ok(NearbyOutcome::Declined),
+                Action::Outcome(Outcome::Expired) => return Ok(NearbyOutcome::Expired),
+                Action::Failed(code) => {
+                    return Err(match code.as_str() {
+                        "peer_revoked" => protocol::RemoteError::PeerRevoked.into(),
+                        _ => format!("nearby pairing refused: {code}").into(),
+                    })
+                }
+            }
+        }
+        actions = next;
     }
-    let confirmation =
-        exchange.finish(&STANDARD.decode(reply["element"].as_str().ok_or("missing element")?)?)?;
-    confirmation.verify_peer(&STANDARD.decode(reply["proof"].as_str().ok_or("missing proof")?)?)?;
-    session
-        .send(json!({"type":"pair.confirm","v":1,"proof":STANDARD.encode(confirmation.outbound())}))
-        .await?;
-    let ready = session.receive().await?;
-    if ready["type"] != "pair.ready" || ready["v"] != 1 {
-        return Err("pairing refused".into());
-    }
+}
+
+/// The pending record, durable before ack. It is not usable for forwarding until pair.done.
+fn store_pending(
+    path: &Path,
+    app: &str,
+    route: Route,
+    identity: &Identity,
+    session: &Session,
+) -> Result<ClientConfig> {
     let (direct, relay_url, host_id) = match route {
         Route::Direct(address) => (Some(address.to_string()), None, None),
         Route::Private(address) => (Some(address), None, None),
@@ -141,15 +275,8 @@ pub async fn pair(path: &Path, app: &str, route: Route, code: &str) -> Result<()
         direct,
         confirmed: false,
     };
-    // A pending record is durable before ack; it is not usable for forwarding until pair.done.
     storage::create(path, &config)?;
-    session.send(json!({"type":"pair.ack","v":1})).await?;
-    let done = session.receive().await?;
-    if done["type"] != "pair.done" || done["v"] != 1 {
-        return Err("pairing remains pending".into());
-    }
-    storage::confirm_client(path, &config)?;
-    Ok(())
+    Ok(config)
 }
 
 fn validate(config: &ClientConfig) -> Result<()> {

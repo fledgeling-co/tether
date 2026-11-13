@@ -34,12 +34,19 @@ pub enum ServiceKind {
 pub struct Service {
     pub kind: ServiceKind,
     pub target: SocketAddr,
+    /// A base64 32-byte key shared with the target. When set, the host proves the connecting
+    /// device to the target before forwarding (see `identify`). TCP services only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub identity: Option<String>,
 }
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Device {
     pub public_key: String,
     pub services: BTreeSet<String>,
+    /// The label the device gave when it paired nearby. Shown to the owner, never trusted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
 }
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -125,6 +132,12 @@ impl HostConfig {
             app_id(name)?;
             if !service.target.ip().is_loopback() || service.target.port() == 0 {
                 return Err("service targets must be fixed loopback addresses".into());
+            }
+            if let Some(identity) = &service.identity {
+                if service.kind != ServiceKind::Tcp {
+                    return Err("only TCP services can identify the connecting device".into());
+                }
+                key(identity)?;
             }
         }
         for (id, device) in &self.devices {
@@ -371,6 +384,7 @@ mod profile_limit_tests {
                 Service {
                     kind: ServiceKind::Tcp,
                     target: "127.0.0.1:1234".parse().unwrap(),
+                    identity: None,
                 },
             )]),
         )
@@ -387,6 +401,7 @@ mod profile_limit_tests {
                     Service {
                         kind: ServiceKind::Udp,
                         target: "127.0.0.1:1234".parse().unwrap(),
+                        identity: None,
                     },
                 );
             }
@@ -397,6 +412,7 @@ mod profile_limit_tests {
                     Device {
                         public_key: STANDARD.encode(key),
                         services: config.services.keys().cloned().collect(),
+                        name: None,
                     },
                 );
             }

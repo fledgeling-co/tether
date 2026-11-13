@@ -1,6 +1,6 @@
 # TetherKit
 
-Swift 6 client and Mac host SDK for macOS 15 and iOS 18, with a separate `TetherUI` library for native host/client controls. Link the optional `TetherDuoUI` product with Xcode 27.1 or newer for Duo reserved-region APIs; standard `TetherUI` does not require them. Add this directory as a local Swift package after running `scripts/build-xcframework.sh` from the repository root. The script builds the Rust C bridge for universal macOS, iOS devices and Apple Silicon simulators. Generated artifacts stay local.
+Swift 6 client and Mac host SDK for macOS 14 and iOS 17, with a separate `TetherUI` library for native host/client controls. Link the optional `TetherDuoUI` product with Xcode 27.1 or newer for Duo reserved-region APIs; standard `TetherUI` does not require them. Add this directory as a local Swift package after running `scripts/build-xcframework.sh` from the repository root. The script builds the Rust C bridge for universal macOS, iOS devices and Apple Silicon simulators. Generated artifacts stay local.
 
 ```swift
 let client = try TetherClient(appID: "app.example.notes")

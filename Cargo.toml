@@ -3,4 +3,9 @@
 # reimplemented per platform.
 [workspace]
 resolver = "2"
-members = ["crates/core", "crates/runtime", "crates/relay", "crates/ffi", "crates/ingress", "crates/media"]
+members = ["crates/core", "crates/model", "crates/runtime", "crates/relay", "crates/ffi", "crates/ingress", "crates/media"]
+
+# Release builds strip debug info by default, and this Mac's Xcode strip leaves proc-macro dylibs that dyld refuses
+# to load ("mis-aligned LINKEDIT string pool"). Build-time code isn't shipped, so it stays unstripped.
+[profile.release.build-override]
+strip = "none"

@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.0-preview.2
+
+Apple packages now cover macOS 14 and iOS 17 as well as later releases; the Swift sources build at those floors and the native bridge is built for them. Nearby pairing and typed-code pairing run on one shared Rust flow in every kit, the copy on every Tether screen comes from the shared core, and a browser kit (`packages/web`) pairs through the relay.
+
+The prebuilt Apple bridge in this release is built at those floors: macOS 14 for arm64 and x86_64, iOS 17 for device and simulator. The browser kit's source and [how Tether works](docs/how-tether-works.html) are published from this release onward.
+
 ## 0.1.0-preview.1
 
 Initial public preview of the shared Rust transport, Swift and Kotlin clients, .NET client/host SDK, and optional SwiftUI, Compose and WinUI connection controls.

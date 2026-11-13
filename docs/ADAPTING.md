@@ -36,6 +36,21 @@ Build the XCFramework with `scripts/build-xcframework.sh` and add `packages/Teth
 
 Rust apps can depend on `tether-core` for protocol state and `tether` for the host/client runtime. The C ABI exposes the shared crypto state and native QUIC media runtime. The CLI uses private files on Unix and DPAPI CurrentUser with owner-only ACLs on Windows. Windows apps can use `packages/windows/Tether.Core` and the native `Tether.WinUI` controls. Keep service policy at the host: a client asks for a service name, never an arbitrary IP address or port. App-specific operations still require their own permissions.
 
+## Know which device opened a stream
+
+A forwarded TCP service otherwise receives a bare loopback connection, so it cannot tell which paired device opened it, and any local process can reach the same port. Give the service an identity key and the host proves the device before forwarding any application byte:
+
+```sh
+tether host init --config "$HOME/.config/tether/example.private.json" \
+  --app app.example.companion \
+  --service api=tcp://127.0.0.1:8081 \
+  --identify api="$HOME/.config/example/tether-identity.key"
+```
+
+The key file is private to your user and holds 32 random bytes or their base64; your service reads the same file. On every connection your service writes `TPIC`, the byte `1` and 32 fresh random bytes. The host answers with `TPIP`, the byte `1`, the device's 32-byte public key and `HMAC-SHA256(key, "tether-peer-identity/v1\0" || length(service) || service || challenge || device key)`. Verify the HMAC in constant time, then map the device key to your own permissions; the device key is the one `host list` shows for that client. A connection that sends anything else is not a paired device. Swift hosts set `identityKeyFile` on `TetherHostServiceProfile`. UDP services cannot be identified.
+
+The proof says which paired device the host admitted; it is not an account. Keep your own authorisation, revocation and replay checks for the operations the device asks for.
+
 ## Keep an existing authenticated TLS protocol
 
 Apps with their own authenticated TLS1.3, certificate pinning and pairing can use `host forward-tls --application-tls` instead of Tether's Noise profile. The TLS ingress gives the client a normal `<public-host-id>.<domain-suffix>:443` endpoint; the app's original TLS session reaches the origin unchanged. This profile does not authenticate a plaintext API automatically.
@@ -46,7 +61,7 @@ The `examples/mcp-router` adapter illustrates this separation: its phone listene
 
 A job-control app retains its job permissions and repository policy. A loopback proxy can carry an existing authenticated protocol unchanged; a deeper integration can consume Tether's transport after mapping the peer context into the application's own permissions. Existing pairing protocols do not automatically interoperate with Tether's wire format.
 
-A screen-sharing app may need control streams and several UDP media channels. Configure each fixed service explicitly, and test the required datagram sizes and latency. WebSocket preserves packet boundaries but adds reliable ordering and possible head-of-line delay. An outbound proxy makes connections originate locally, so a local source address cannot serve as a device identity. Keep capture, codecs, permissions and any third-party licensing obligations in the consuming application.
+A screen-sharing app may need control streams and several UDP media channels. Configure each fixed service explicitly, and test the required datagram sizes and latency. WebSocket preserves packet boundaries but adds reliable ordering and possible head-of-line delay. An outbound proxy makes connections originate locally, so a local source address cannot serve as a device identity; use an identity key (above) when the service needs to know the device. Keep capture, codecs, permissions and any third-party licensing obligations in the consuming application.
 
 Physical-device operation, screen-sharing performance, platform entitlements and end-user permissions remain app-specific acceptance work.
 

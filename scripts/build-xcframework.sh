@@ -22,7 +22,7 @@ cleanup() {
 trap cleanup EXIT
 cd "$TETHER_ROOT"
 for TETHER_TARGET in aarch64-apple-darwin x86_64-apple-darwin; do
-  MACOSX_DEPLOYMENT_TARGET=15.0 cargo build --release --locked -p tether-ffi --target "$TETHER_TARGET" -j "$TETHER_BUILD_JOBS"
+  MACOSX_DEPLOYMENT_TARGET=14.0 cargo build --release --locked -p tether-ffi --target "$TETHER_TARGET" -j "$TETHER_BUILD_JOBS"
 done
 mkdir -p "$TETHER_STAGE/mac" "$TETHER_STAGE/headers"
 lipo -create target/aarch64-apple-darwin/release/libtether_ffi.a target/x86_64-apple-darwin/release/libtether_ffi.a -output "$TETHER_STAGE/mac/libtether_ffi.a"
@@ -31,7 +31,7 @@ printf 'module TetherFFI { header "tether.h" export * }\n' > "$TETHER_STAGE/head
 TETHER_ARGS=(-create-xcframework -library "$TETHER_STAGE/mac/libtether_ffi.a" -headers "$TETHER_STAGE/headers")
 if [[ "${1:-}" != "--mac-only" ]]; then
   for TETHER_TARGET in aarch64-apple-ios aarch64-apple-ios-sim; do
-    IPHONEOS_DEPLOYMENT_TARGET=18.0 cargo build --release --locked -p tether-ffi --target "$TETHER_TARGET" -j "$TETHER_BUILD_JOBS"
+    IPHONEOS_DEPLOYMENT_TARGET=17.0 cargo build --release --locked -p tether-ffi --target "$TETHER_TARGET" -j "$TETHER_BUILD_JOBS"
     TETHER_ARGS+=(-library "$TETHER_ROOT/target/$TETHER_TARGET/release/libtether_ffi.a" -headers "$TETHER_STAGE/headers")
   done
 fi

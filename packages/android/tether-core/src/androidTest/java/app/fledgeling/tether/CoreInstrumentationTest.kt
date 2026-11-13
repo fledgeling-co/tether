@@ -93,4 +93,20 @@ class CoreInstrumentationTest {
         }
     }
 
+
+    /** Nearby pairing against a live Rust host whose owner approves from the Mac (fixture "nearbyPort"). */
+    @Test fun liveRustHostNearbyPairingNeedsBothApprovals()=runBlocking {
+        val context=InstrumentationRegistry.getInstrumentation().targetContext; val file=File(context.filesDir,"tether-nearby-fixture.json")
+        assertTrue("A task-owned live nearby host fixture must be installed",file.isFile); val fixture=JSONObject(file.readText())
+        val app=fixture.getString("appId"); val route=TetherRoute.PrivateNetwork("10.0.2.2",fixture.getInt("port")); val client=TetherClient(context,app)
+        try {
+            var shownAt=0L; var code=""
+            // Undecided until the code has been up for a moment, as a person reading it would be.
+            val outcome=client.pairNearby(route,"Android Test","Android",onCode={ code=it; shownAt=System.currentTimeMillis() },onHostApproved={},
+                decision={ if(shownAt>0&&System.currentTimeMillis()-shownAt>1300) true else null })
+            assertTrue(code.matches(Regex("[0-9]{6}"))); assertTrue(outcome is NearbyOutcome.Paired)
+            val peer=(outcome as NearbyOutcome.Paired).record; assertTrue(peer.confirmed); assertTrue(client.status(peer).services.isNotEmpty())
+            client.leave(peer)
+        } finally { client.close() }
+    }
 }

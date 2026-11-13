@@ -25,6 +25,9 @@ interface TetherClientManaging : Closeable {
     suspend fun openMedia(peer:PeerRecord,name:String):TetherMediaSession
     fun closeStreams(hostId:String)
     fun retireStreams(hostId:String):Closeable { closeStreams(hostId); return Closeable {} }
+    /** Pairs by comparing a six-digit code shown on both devices. [decision] returns this device owner's answer, or null while undecided. */
+    /** [onStoring] fires once both have approved and the acknowledgement is about to make the pairing irreversible. */
+    suspend fun pairNearby(route:TetherRoute,deviceName:String,deviceKind:String,onCode:suspend(String)->Unit,onHostApproved:suspend()->Unit,decision:()->Boolean?,onStoring:suspend()->Unit={}):NearbyOutcome = throw TetherException("nearby_closed")
 }
 
 internal class Session private constructor(private val carrier:Carrier, private val cipher:Long, val hostKey:String, val binding:String,private val release:()->Unit):SecureChannel {
@@ -33,6 +36,10 @@ internal class Session private constructor(private val carrier:Carrier, private 
     override suspend fun receive():ByteArray { if(!receive.tryLock()) throw TetherException("busy"); try { requireTether(!closed.get(),"closed"); val encrypted=carrier.receive(); return try { bytes(NativeBridge.invoke("transport.decrypt","handle" to cipher,"data" to b64(encrypted))).also { currentCoroutineContext().ensureActive() } } finally { encrypted.fill(0) } } catch(e:Exception) { close(); throw e } finally { receive.unlock() } }
     suspend fun control(type:String,vararg fields:Pair<String,Any>) { val j=JSONObject().put("v",1).put("type",type); fields.forEach { (k,v)->j.put(k,v) }; val data=j.toString().toByteArray(); try { requireTether(data.size<=4096); send(data) } finally { data.fill(0) } }
     suspend fun controlReply(expected:String):JSONObject = withDeadline(15000) { val data=receive(); try { requireTether(data.size<=4096); val j=JSONObject(String(data,Charsets.UTF_8)); requireTether(j.getInt("v")==1); if(j.getString("type")=="error") throw TetherException(j.optString("code","invalid_protocol")); requireTether(j.getString("type")==expected); j } finally { data.fill(0) } }
+    /** Sends a record a shared flow produced; it already carries `v`. */
+    suspend fun sendRecord(record:JSONObject) { val data=record.toString().toByteArray(); try { requireTether(data.size<=4096,"invalid_frame"); send(data) } finally { data.fill(0) } }
+    /** One control record for a shared flow to judge, host errors included. */
+    suspend fun record():JSONObject = withDeadline(15000) { val data=receive(); try { requireTether(data.size<=4096); JSONObject(String(data,Charsets.UTF_8)) } finally { data.fill(0) } }
     override fun close() { if(closed.compareAndSet(false,true)) { carrier.close(); NativeBridge.destroy(cipher); release() } }
     companion object { suspend fun connect(route:TetherRoute,appId:String,identity:Long,pin:String?,allowLoopback:Boolean,data:Boolean=false):Session {
         route.validate(allowLoopback); val quota=if(data)dataSlots else controlSlots; requireTether(quota.tryAcquire(),"service_capacity"); val released=AtomicBoolean(); val release={ if(released.compareAndSet(false,true))quota.release(); Unit }; var owned:Carrier?=null
@@ -117,22 +124,61 @@ class TetherClient(context:Context,override val appId:String,private val allowIn
     }
     private fun closeSession(session:Session) { sessions.remove(session); session.close() }
     override suspend fun pair(route:TetherRoute,code:String):PeerRecord {
-        ensureOpen(); requireTether(code.matches(Regex("[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{8}")),"invalid_code"); if(!pairing.tryLock())throw TetherException("busy")
+        ensureOpen(); if(!pairing.tryLock())throw TetherException("busy")
         try { return operation(null) {
-            var exchange=0L; var proof=0L; var session:Session?=null
+            var session:Session?=null
             try {
                 val(id,pub)=identity(); val active=Session.connect(route,appId,id,null,allowInsecureLoopbackForTesting); session=active
                 synchronized(life) { ensureOpen(); sessions.add(active) }
-                val start=NativeBridge.invoke("pairing.start","role" to "client","code" to code,"app" to appId,"binding" to active.binding,"clientKey" to pub,"hostKey" to active.hostKey); exchange=start.getLong("handle")
-                active.control("pair.start","element" to b64(bytes(start,size=33))); val reply=active.controlReply("pair.reply")
-                val confirm=NativeBridge.invoke("pairing.finish","handle" to exchange,"data" to reply.getString("element")); exchange=0; proof=confirm.getLong("handle"); val outbound=b64(bytes(confirm,size=32))
-                NativeBridge.invoke("pairing.verify","handle" to proof,"data" to reply.getString("proof")); proof=0
-                active.control("pair.confirm","proof" to outbound); active.controlReply("pair.ready")
-                val record=PeerRecord(appId,active.hostKey,pub,route,false); withContext(Dispatchers.IO) { store.begin(record) }
-                active.control("pair.ack"); active.controlReply("pair.done"); currentCoroutineContext().ensureActive()
-                val confirmed=record.copy(confirmed=true); withContext(Dispatchers.IO) { store.replace(record,confirmed) }; confirmed
-            } finally { session?.let(::closeSession); NativeBridge.destroy(exchange); NativeBridge.destroy(proof) }
+                val begun=NativeBridge.invoke("code.begin","app" to appId,"code" to code,"binding" to active.binding,"clientKey" to pub,"hostKey" to active.hostKey)
+                when(val outcome=drive(active,route,pub,begun)) { is NearbyOutcome.Paired->outcome.record; else->throw TetherException("invalid_protocol") }
+            } finally { session?.let(::closeSession) }
         } } finally { pairing.unlock() }
+    }
+    override suspend fun pairNearby(route:TetherRoute,deviceName:String,deviceKind:String,onCode:suspend(String)->Unit,onHostApproved:suspend()->Unit,decision:()->Boolean?,onStoring:suspend()->Unit):NearbyOutcome {
+        ensureOpen(); requireTether(route is TetherRoute.PrivateNetwork,"nearby_closed"); if(!pairing.tryLock())throw TetherException("busy")
+        try { return operation(null) {
+            var session:Session?=null
+            try {
+                val(id,pub)=identity(); val active=Session.connect(route,appId,id,null,allowInsecureLoopbackForTesting); session=active
+                synchronized(life) { ensureOpen(); sessions.add(active) }
+                // The shared flow applies the approval rules: an answer counts only after the code has been up for a second and
+                // the decision has read undecided since it appeared; a decline is final and beats a racing ready.
+                val begun=NativeBridge.invoke("nearby.begin","app" to appId,"binding" to active.binding,"clientKey" to pub,"hostKey" to active.hostKey,"name" to deviceName,"kind" to deviceKind)
+                drive(active,route,pub,begun,onCode,onHostApproved,decision,onStoring)
+            } finally { session?.let(::closeSession) }
+        } } finally { pairing.unlock() }
+    }
+    /** Performs a shared Rust pairing flow's actions until it ends; trust is saved only when it says so. */
+    private suspend fun drive(active:Session,route:TetherRoute,pub:String,begun:JSONObject,onCode:suspend(String)->Unit={},onHostApproved:suspend()->Unit={},decision:()->Boolean?={ null },onStoring:suspend()->Unit={}):NearbyOutcome {
+        val flow=begun.optLong("handle"); val started=System.nanoTime(); fun now()=(System.nanoTime()-started)/1_000_000
+        fun current():Any=decision()?:JSONObject.NULL
+        var pending:PeerRecord?=null; var confirmed:PeerRecord?=null
+        try {
+            var actions=begun.getJSONArray("actions")
+            while(true) {
+                var next:org.json.JSONArray?=null
+                for(i in 0 until actions.length()) { val action=actions.getJSONObject(i); currentCoroutineContext().ensureActive()
+                    when(action.getString("do")) {
+                        "send"->active.sendRecord(action.getJSONObject("message"))
+                        "receive"->{ val message=active.record(); next=NativeBridge.invoke("flow.receive","handle" to flow,"message" to message,"decision" to current(),"now" to now()).getJSONArray("actions") }
+                        "wait"->{ delay(action.optLong("ms",600)); next=NativeBridge.invoke("flow.tick","handle" to flow,"decision" to current(),"now" to now()).getJSONArray("actions") }
+                        // Only once the code is on screen does its read time start.
+                        "show_code"->{ onCode(action.getString("code").also { requireTether(it.matches(Regex("[0-9]{6}"))) }); next=NativeBridge.invoke("flow.shown","handle" to flow,"decision" to current(),"now" to now()).getJSONArray("actions") }
+                        "host_approved"->onHostApproved()
+                        // The durable pending record precedes ack; an interrupted completion is recoverable.
+                        // From here the ack makes completion irreversible, so the UI stops offering Cancel; a decline until then still wins.
+                        "store_pending"->{ val record=PeerRecord(appId,active.hostKey,pub,route,false); withContext(Dispatchers.IO) { store.begin(record) }; pending=record; onStoring(); next=NativeBridge.invoke("flow.stored","handle" to flow,"decision" to current()).getJSONArray("actions") }
+                        "discard_pending"->{ pending?.let { record -> withContext(Dispatchers.IO) { store.replace(record,null) } }; pending=null }
+                        "confirm"->{ val record=pending?:throw TetherException("pairing_pending"); val done=record.copy(confirmed=true); withContext(Dispatchers.IO) { store.replace(record,done) }; confirmed=done }
+                        "outcome"->return when(action.getString("outcome")) { "paired"->NearbyOutcome.Paired(confirmed?:throw TetherException("pairing_pending")); "declined"->NearbyOutcome.Declined; "expired"->NearbyOutcome.Expired; else->throw TetherException("invalid_protocol") }
+                        "failed"->throw TetherException(action.optString("code","invalid_protocol").take(64))
+                        else->throw TetherException("invalid_protocol")
+                    }
+                }
+                actions=next?:throw TetherException("invalid_protocol")
+            }
+        } finally { NativeBridge.destroy(flow) }
     }
     private fun decodeStatus(j:JSONObject):HostStatus { val values=j.getJSONArray("services"); requireTether(values.length()<=32); val services=(0 until values.length()).map { val v=values.getJSONObject(it); val id=v.getString("id"); scope(id); val kind=when(v.getString("kind")) { "tcp"->ServiceKind.TCP; "udp"->ServiceKind.UDP; else->throw TetherException("invalid_protocol") }; HostService(id,kind) }; requireTether(services.map { it.id }.distinct().size==services.size); return HostStatus(services) }
     override suspend fun status(peer:PeerRecord):HostStatus { requireTether(peer.confirmed,"pairing_pending"); return operation(peer.id) { val session=connect(peer); try { session.control("host.status"); decodeStatus(session.controlReply("host.status")) } finally { closeSession(session) } } }

@@ -22,6 +22,8 @@ public sealed class TetherConnectionStore : INotifyPropertyChanged,IAsyncDisposa
     private readonly Dictionary<string,SemaphoreSlim> operations=new(StringComparer.Ordinal);private readonly SemaphoreSlim trust=new(1);
     private long generation;private bool closed;private string? selected;
     public event PropertyChangedEventHandler? PropertyChanged;
+    /// <summary>The application this store's client is scoped to.</summary>
+    public string AppId=>client.AppId;
     public IReadOnlyList<TetherManagedHost> Hosts {get{lock(state)return hosts.Values.OrderBy(h=>h.Id,StringComparer.Ordinal).ToArray();}}
     public string? SelectedHostId {get{lock(state)return selected;}set{lock(state){EnsureOpen();if(value!=null&&!hosts.ContainsKey(value))throw new TetherException(TetherError.IdentityMismatch);selected=value;}Changed(nameof(SelectedHostId));}}
     public TetherConnectionStore(ITetherClient client,TetherReconnectPolicy? reconnectPolicy=null){this.client=client;policy=reconnectPolicy??new();context=SynchronizationContext.Current;}
@@ -53,6 +55,12 @@ public sealed class TetherConnectionStore : INotifyPropertyChanged,IAsyncDisposa
     {
         await trust.WaitAsync(token);PeerRecord peer;try{lock(state)EnsureOpen();try{peer=await client.PairAsync(route,code,token);}finally{await Reload(CancellationToken.None);}}finally{trust.Release();}
         SelectedHostId=peer.Id;await ConnectAsync(peer.Id,token);return Find(peer.Id);
+    }
+    /// <summary>Pairs with a nearby computer by comparing a code, then selects and connects it.</summary>
+    public async Task<NearbyOutcome> PairNearbyAsync(TetherRoute route,string deviceName,string deviceKind,Func<string,Task> onCode,Func<Task>? onHostApproved,Func<bool?> decision,CancellationToken token=default,Func<Task>? onStoring=null)
+    {
+        await trust.WaitAsync(token);NearbyOutcome outcome;try{lock(state)EnsureOpen();try{outcome=await client.PairNearbyAsync(route,deviceName,deviceKind,onCode,onHostApproved,decision,token,onStoring);}finally{await Reload(CancellationToken.None);}}finally{trust.Release();}
+        if(outcome is NearbyOutcome.Paired paired){SelectedHostId=paired.Record.Id;await ConnectAsync(paired.Record.Id,token);}return outcome;
     }
     public Task ReconnectAsync(string id,CancellationToken token=default)=>ConnectAsync(id,token);
     public async Task ConnectAsync(string id,CancellationToken token=default){var gate=Enter(id,token);try{await ConnectCore(id,token);}finally{Exit(id,gate);}}

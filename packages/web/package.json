@@ -1,0 +1,26 @@
+{
+  "name": "@fledgeling/tether-web",
+  "version": "0.1.0",
+  "description": "Tether for the browser: pair with a Mac or PC through a relay, keep its identity in IndexedDB, and drop in the pairing and workspace UI as Web Components.",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": "./dist/index.js",
+    "./elements": "./dist/elements.js",
+    "./testing": "./dist/testing.js",
+    "./tether.wasm": "./dist/tether.wasm"
+  },
+  "files": [
+    "dist"
+  ],
+  "sideEffects": [
+    "./dist/elements.js"
+  ],
+  "scripts": {
+    "build": "bash scripts/build.sh",
+    "test": "python3 test/run_live.py"
+  },
+  "license": "UNLICENSED",
+  "private": true
+}

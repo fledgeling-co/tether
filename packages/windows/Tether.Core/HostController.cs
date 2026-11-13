@@ -24,8 +24,10 @@ public sealed record HostRoute(string Mode,string? Address=null,ushort Port=0,st
         throw new TetherException(TetherError.InvalidRoute);
     }
 }
-public sealed record HostClient(string Id,IReadOnlyList<string> Services,int? ActiveSessions,bool? RecentlySeen,long? LastSeenUnixMs);
+public sealed record HostClient(string Id,IReadOnlyList<string> Services,int? ActiveSessions,bool? RecentlySeen,long? LastSeenUnixMs,string? Name=null);
 public sealed record PairingWindow(string Code,DateTimeOffset ExpiresAt,int AttemptsRemaining);
+/// <summary>A device waiting for this host's owner to compare its code and approve or decline.</summary>
+public sealed record NearbyRequest(ulong Id,string Name,string Kind,string Code,DateTimeOffset ExpiresAt,bool DeviceApproved);
 /// <summary>An app-owned helper and private inherited pipes; stdout is parsed and never logged.</summary>
 public sealed class TetherHostController : INotifyPropertyChanged,IAsyncDisposable
 {
@@ -35,6 +37,15 @@ public sealed class TetherHostController : INotifyPropertyChanged,IAsyncDisposab
     public IReadOnlyList<HostService> Services {get;private set;}=Array.Empty<HostService>();
     public IReadOnlyList<HostClient> Clients {get;private set;}=Array.Empty<HostClient>();
     public PairingWindow? Pairing {get;private set;}
+    /// <summary>Requests from nearby devices, each with the code both screens display.</summary>
+    public IReadOnlyList<NearbyRequest> NearbyRequests {get;private set;}=Array.Empty<NearbyRequest>();
+    /// <summary>Whether nearby devices may ask to pair. Requests always need the owner's approval.</summary>
+    public bool AllowsNearby {get;private set;}=true;
+    /// <summary>The host closed nearby pairing itself after unfinished requests, which is what a device in the middle looks like.</summary>
+    public bool NearbyClosedForSafety {get;private set;}
+    /// <summary>This host's public key, announced so nearby devices can show it as already paired.</summary>
+    public string? HostKey {get;private set;}
+    private TetherNearbyAnnouncement? announcement;
     public event PropertyChangedEventHandler? PropertyChanged;
     private readonly string helper;private readonly bool testing;private readonly SynchronizationContext? context;
     private readonly SemaphoreSlim mutation=new(1),writing=new(1),requestSlots=new(8);private readonly ConcurrentDictionary<Guid,PendingRequest> requests=new();private sealed record PendingRequest(long Epoch,TaskCompletionSource<JsonElement> Completion);private readonly object ownerState=new();
@@ -75,6 +86,7 @@ public sealed class TetherHostController : INotifyPropertyChanged,IAsyncDisposab
     private void ParseInspection(JsonElement root)
     {
         if(root.GetProperty("app_id").GetString()!=AppId)throw new TetherException(TetherError.InvalidScope);var id=root.GetProperty("host_id").GetString();if(!ValidHostId(id))throw new TetherException(TetherError.Protocol);
+        HostKey=root.TryGetProperty("host_key",out var hostKey)&&hostKey.GetString()is{Length:44} key?key:null;
         var source=root.GetProperty("services");if(source.ValueKind!=JsonValueKind.Array||source.GetArrayLength()>32)throw new TetherException(TetherError.Protocol);var services=new List<HostService>();
         foreach(var entry in source.EnumerateArray()){var name=entry.GetProperty("id").GetString()??throw new TetherException(TetherError.Protocol);Scope.Validate(name);var kind=entry.GetProperty("kind").GetString()switch{"tcp"=>ServiceKind.Tcp,"udp"=>ServiceKind.Udp,_=>throw new TetherException(TetherError.Protocol)};if(services.Any(s=>s.Id==name))throw new TetherException(TetherError.Protocol);services.Add(new(name,kind));}HostId=id;Services=services;Changed();
     }
@@ -101,12 +113,13 @@ public sealed class TetherHostController : INotifyPropertyChanged,IAsyncDisposab
         }catch(OperationCanceledException)when(token.IsCancellationRequested){}catch{}
         finally {var changed=false;lock(ownerState){if(current==epoch&&ReferenceEquals(process,p)){Pairing=null;ClearPresence();State=HostRunState.Stopping;readiness.TrySetException(new TetherException(TetherError.Unavailable));foreach(var item in requests.Where(i=>i.Value.Epoch==current).ToArray())if(requests.TryRemove(item.Key,out var waiter))waiter.Completion.TrySetException(new TetherException(TetherError.Unavailable));if(retirement.IsCompleted)retirement=RetireProcess(p,current,true);changed=true;}}if(changed)Changed();}
     }
-    private async Task<JsonElement> Request(string command,string? clientId,CancellationToken token)
+    private Task<JsonElement> Request(string command,string? clientId,CancellationToken token)=>Request(command,clientId,null,token);
+    private async Task<JsonElement> Request(string command,string? clientId,Dictionary<string,object?>? fields,CancellationToken token)
     {
         EnsureOpen();if(!await requestSlots.WaitAsync(0,token))throw new TetherException(TetherError.Busy);var id=Guid.NewGuid();var waiter=new TaskCompletionSource<JsonElement>(TaskCreationOptions.RunContinuationsAsynchronously);byte[]? bytes=null;
         try {
             Process p;lock(ownerState){EnsureOpen();p=process??throw new TetherException(TetherError.Unavailable);if(p.HasExited||State is HostRunState.Failed or HostRunState.Stopped or HostRunState.Stopping)throw new TetherException(TetherError.Unavailable);if(command=="pair-code"&&State is not(HostRunState.Listening or HostRunState.RelayConnected))throw new TetherException(TetherError.Unavailable);if(!requests.TryAdd(id,new(epoch,waiter)))throw new TetherException(TetherError.Busy);}
-            var value=new Dictionary<string,object?>{{"v",1},{"request_id",id.ToString("D")},{"command",command},{"expected_app",AppId}};if(clientId!=null)value["client_id"]=clientId;bytes=JsonSerializer.SerializeToUtf8Bytes(value);
+            var value=new Dictionary<string,object?>{{"v",1},{"request_id",id.ToString("D")},{"command",command},{"expected_app",AppId}};if(clientId!=null)value["client_id"]=clientId;if(fields!=null)foreach(var field in fields)value[field.Key]=field.Value;bytes=JsonSerializer.SerializeToUtf8Bytes(value);
             if(bytes.Length>2048)throw new TetherException(TetherError.Protocol);using var linked=CancellationTokenSource.CreateLinkedTokenSource(token,controllerLifetime.Token);using var d=Deadline.Start(linked.Token);await writing.WaitAsync(d.Token);try{await p.StandardInput.BaseStream.WriteAsync(bytes,d.Token);await p.StandardInput.BaseStream.WriteAsync(new byte[]{10},d.Token);await p.StandardInput.BaseStream.FlushAsync(d.Token);}finally{writing.Release();}return await waiter.Task.WaitAsync(d.Token);
         }catch(OperationCanceledException){if(token.IsCancellationRequested)throw;throw new TetherException(TetherError.Unavailable);}finally{requests.TryRemove(id,out _);requestSlots.Release();if(bytes!=null)CryptographicOperations.ZeroMemory(bytes);}
     }
@@ -119,15 +132,50 @@ public sealed class TetherHostController : INotifyPropertyChanged,IAsyncDisposab
         EnsureOpen();JsonElement root;if(Running)root=await Request("clients",null,token);else{var bytes=await Execute(Scoped("list"),token);try{using var doc=JsonDocument.Parse(bytes);root=doc.RootElement.Clone();}finally{CryptographicOperations.ZeroMemory(bytes);}}
         if(root.ValueKind!=JsonValueKind.Array||root.GetArrayLength()>256)throw new TetherException(TetherError.Protocol);var clients=new List<HostClient>();
         foreach(var entry in root.EnumerateArray()){var id=entry.GetProperty("device").GetString();if(id is not{Length:64}||!id.All(char.IsAsciiHexDigit)||clients.Any(c=>c.Id==id))throw new TetherException(TetherError.Protocol);var services=entry.GetProperty("services").EnumerateArray().Select(s=>s.GetString()??throw new TetherException(TetherError.Protocol)).ToArray();if(services.Length>32)throw new TetherException(TetherError.Protocol);foreach(var service in services)Scope.Validate(service);
-            int? active=entry.TryGetProperty("active_sessions",out var a)?a.GetInt32():null;bool? recent=entry.TryGetProperty("recently_seen",out var b)?b.GetBoolean():null;long? seen=entry.TryGetProperty("last_seen_unix_ms",out var c)&&c.ValueKind!=JsonValueKind.Null?c.GetInt64():null;if(active is<0 or>24)throw new TetherException(TetherError.Protocol);clients.Add(new(id,services,active,recent,seen));}
+            int? active=entry.TryGetProperty("active_sessions",out var a)?a.GetInt32():null;bool? recent=entry.TryGetProperty("recently_seen",out var b)?b.GetBoolean():null;long? seen=entry.TryGetProperty("last_seen_unix_ms",out var c)&&c.ValueKind!=JsonValueKind.Null?c.GetInt64():null;if(active is<0 or>24)throw new TetherException(TetherError.Protocol);string? name=entry.TryGetProperty("name",out var n)&&n.ValueKind==JsonValueKind.String?TetherClient.Label(n.GetString()??""):null;clients.Add(new(id,services,active,recent,seen,name));}
         lock(ownerState){if(State is not(HostRunState.Listening or HostRunState.RelayConnected))clients=clients.Select(c=>c with{ActiveSessions=null,RecentlySeen=null,LastSeenUnixMs=null}).ToList();Clients=clients;}Changed();
+    }
+    /// <summary>Announces this host to nearby devices on its private-network port. The name is what phones list.</summary>
+    public void AnnounceNearby(string name,string kind="PC")
+    {
+        if(ListeningAddress==null||!IPEndPoint.TryParse(ListeningAddress,out var endpoint)||State!=HostRunState.Listening)throw new TetherException(TetherError.Unavailable);
+        announcement?.Dispose();announcement=new TetherNearbyAnnouncement(AppId,name,kind,(ushort)endpoint.Port,NearbyService.Host,HostKey);
+    }
+    /// <summary>Invites a device from the nearby list. It connects back and both screens show the code.</summary>
+    public async Task InviteAsync(NearbyPeer peer,string hostName,CancellationToken token=default)
+    {
+        if(ListeningAddress==null||!IPEndPoint.TryParse(ListeningAddress,out var endpoint)||!AllowsNearby)throw new TetherException(TetherError.Unavailable);
+        await TetherNearbyInviteListener.InviteAsync(peer,AppId,hostName,(ushort)endpoint.Port,token);
+    }
+    public async Task RefreshNearbyAsync(CancellationToken token=default)
+    {
+        var root=await Request("nearby",null,token);var list=new List<NearbyRequest>();
+        foreach(var item in root.GetProperty("requests").EnumerateArray().Take(4))
+        {
+            if(item.TryGetProperty("decision",out var decision)&&decision.ValueKind!=JsonValueKind.Null)continue;
+            var code=item.GetProperty("code").GetString();var seconds=item.GetProperty("expires_in_seconds").GetInt32();
+            if(code is not{Length:6}||!code.All(char.IsAsciiDigit)||seconds is<0 or>60)throw new TetherException(TetherError.Protocol);
+            list.Add(new(item.GetProperty("id").GetUInt64(),TetherClient.Label(item.GetProperty("name").GetString()??""),TetherClient.Label(item.GetProperty("kind").GetString()??""),code,DateTimeOffset.UtcNow.AddSeconds(seconds),item.GetProperty("client_approved").GetBoolean()));
+        }
+        lock(ownerState){NearbyRequests=list;AllowsNearby=root.GetProperty("allow").GetBoolean();NearbyClosedForSafety=root.TryGetProperty("closed",out var closed)&&closed.ValueKind==JsonValueKind.String;}Changed();
+    }
+    public async Task DecideNearbyAsync(NearbyRequest request,bool approve,CancellationToken token=default)
+    {
+        _=await Request("nearby-decide",null,new(){{"nearby_id",request.Id},{"approve",approve}},token);
+        lock(ownerState)NearbyRequests=NearbyRequests.Where(r=>r.Id!=request.Id).ToArray();Changed();
+    }
+    public async Task SetAllowsNearbyAsync(bool allow,CancellationToken token=default)
+    {
+        _=await Request("nearby-allow",null,new(){{"approve",allow}},token);
+        lock(ownerState){AllowsNearby=allow;if(allow)NearbyClosedForSafety=false;else NearbyRequests=Array.Empty<NearbyRequest>();}Changed();
     }
     public async Task RevokeAsync(string clientId,CancellationToken token=default)
     {if(clientId.Length!=64||!clientId.All(char.IsAsciiHexDigit))throw new TetherException(TetherError.InvalidScope);if(!await mutation.WaitAsync(0,token))throw new TetherException(TetherError.Busy);try{EnsureOpen();if(Running)_=await Request("revoke",clientId,token);else{var args=Scoped("revoke").Concat(new[]{"--device",clientId});using var p=new Process{StartInfo=StartInfo(args)};if(!p.Start())throw new TetherException(TetherError.Unavailable);using var linked=CancellationTokenSource.CreateLinkedTokenSource(token,controllerLifetime.Token);using var d=Deadline.Start(linked.Token);var a=Drain(p.StandardOutput.BaseStream,d.Token);var b=Drain(p.StandardError.BaseStream,d.Token);try{await p.WaitForExitAsync(d.Token).ConfigureAwait(false);await Task.WhenAll(a,b);if(p.ExitCode!=0)throw new TetherException(TetherError.Unavailable);}finally{if(!p.HasExited)p.Kill(entireProcessTree:true);}}await RefreshClientsAsync(CancellationToken.None);}finally{mutation.Release();}}
     public async Task StopAsync(){if(!await mutation.WaitAsync(0))throw new TetherException(TetherError.Busy);try{await StopCore();}finally{mutation.Release();}}
     private async Task StopCore()
     {
-        Task<bool> retiring;lock(ownerState){Pairing=null;ListeningAddress=null;ClearPresence();if(process is{} p){if(retirement.IsCompleted){var current=++epoch;lifetime?.Cancel();State=HostRunState.Stopping;retirement=RetireProcess(p,current,false);}retiring=retirement;}else{State=HostRunState.Stopped;retiring=Task.FromResult(true);}}
+        announcement?.Dispose();announcement=null;
+        Task<bool> retiring;lock(ownerState){Pairing=null;ListeningAddress=null;NearbyRequests=Array.Empty<NearbyRequest>();ClearPresence();if(process is{} p){if(retirement.IsCompleted){var current=++epoch;lifetime?.Cancel();State=HostRunState.Stopping;retirement=RetireProcess(p,current,false);}retiring=retirement;}else{State=HostRunState.Stopped;retiring=Task.FromResult(true);}}
         foreach(var item in requests.ToArray())if(requests.TryRemove(item.Key,out var waiter))waiter.Completion.TrySetException(new TetherException(TetherError.Closed));Changed();
         if(!await retiring.ConfigureAwait(false))throw new TetherException(TetherError.Unavailable);
         lock(ownerState){if(process==null)State=HostRunState.Stopped;}Changed();

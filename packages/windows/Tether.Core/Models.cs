@@ -4,7 +4,7 @@ using System.Text;
 
 namespace Tether;
 
-public enum TetherError { InvalidScope, InvalidRoute, Protocol, Authentication, Revoked, IdentityMismatch, PairingPending, PairingExists, Closed, Busy, Capacity, MediaUnavailable, Unavailable, Storage, ServiceRefused }
+public enum TetherError { InvalidScope, InvalidRoute, Protocol, Authentication, Revoked, IdentityMismatch, PairingPending, PairingExists, Closed, Busy, Capacity, MediaUnavailable, Unavailable, Storage, ServiceRefused, NearbyRefused, NearbyPaused, NearbyBusy }
 public sealed class TetherException(TetherError code) : Exception(MessageFor(code))
 {
     public TetherError Code { get; } = code;
@@ -18,9 +18,14 @@ public sealed class TetherException(TetherError code) : Exception(MessageFor(cod
         TetherError.Busy => "Another operation is in progress.",
         TetherError.Capacity => "This host has no free data channels. Close a stream or retry later.",
         TetherError.MediaUnavailable => "The direct media route is unavailable. Choose the reliable service route explicitly.",
+        TetherError.NearbyRefused => "That computer isn't accepting new devices right now.",
+        TetherError.NearbyPaused => "That computer declined this device several times. Try again in 10 minutes.",
+        TetherError.NearbyBusy => "That computer is already showing another request. Try again in a moment.",
         _ => "The Tether operation could not complete."
     };
 }
+/// <summary>How a nearby pairing ended. Declined and expired save nothing on either device.</summary>
+public abstract record NearbyOutcome { public sealed record Paired(PeerRecord Record) : NearbyOutcome; public sealed record Declined : NearbyOutcome; public sealed record Expired : NearbyOutcome; }
 public enum ServiceKind { Tcp, Udp }
 public enum ConnectionState { Offline, Connecting, Connected, Reconnecting, Revoked, IdentityMismatch, Pending, Capacity }
 public enum LocalForgetResult { LocalTrustRemovedHostUnchanged }

@@ -15,6 +15,8 @@ data class PeerRecord(val appId: String, val hostKey: String, val clientKey: Str
     internal fun json() = JSONObject().put("appId", appId).put("hostKey", hostKey).put("clientKey", clientKey).put("route", route.json()).put("confirmed", confirmed).put("pairingId", pairingId)
     internal companion object { fun decode(value: JSONObject) = PeerRecord(value.getString("appId"), value.getString("hostKey"), value.getString("clientKey"), TetherRoute.decode(value.getJSONObject("route")), value.getBoolean("confirmed"), value.getString("pairingId")) }
 }
+/** How a nearby pairing ended. Declined and expired save nothing on either device. */
+sealed class NearbyOutcome { data class Paired(val record: PeerRecord) : NearbyOutcome(); data object Declined : NearbyOutcome(); data object Expired : NearbyOutcome() }
 data class ManagedHost(val record: PeerRecord, val state: ConnectionState, val services: List<HostService> = emptyList(), val notice: String? = null) { val id: String get() = record.id }
 class TetherException(val code: String) : Exception(when (code) {
     "identity_mismatch" -> "The host identity changed. Saved trust was retained."
@@ -24,6 +26,9 @@ class TetherException(val code: String) : Exception(when (code) {
     "storage" -> "Protected device records could not be read or changed."
     "busy" -> "Another operation is already using this connection."
     "invalid_route" -> "Check the host address and connection details."
+    "nearby_closed", "relay_refused" -> "That computer isn't accepting new devices right now."
+    "paused" -> "That computer declined this device several times. Try again in 10 minutes."
+    "already_paired" -> "This device is already paired with that computer."
     else -> "The secure connection could not complete."
 })
 internal fun requireTether(ok: Boolean, code: String = "invalid_protocol") { if (!ok) throw TetherException(code) }

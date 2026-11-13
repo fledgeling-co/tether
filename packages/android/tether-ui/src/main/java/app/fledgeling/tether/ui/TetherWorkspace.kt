@@ -77,6 +77,7 @@ public fun TetherWorkspace(
     onOpenService: ((String, HostService) -> Unit)? = null,
     onScanInvitation: (suspend () -> String?)? = null,
     hostLabel: (ManagedHost) -> String = ::defaultHostLabel,
+    deviceName: String = android.os.Build.MODEL,
 ) {
     val hosts by store.hosts.collectAsStateWithLifecycle()
     val selected by store.selectedHostId.collectAsStateWithLifecycle()
@@ -129,6 +130,8 @@ public fun TetherWorkspace(
         onDiscardPending = { id -> run(id, "The pending record could not be removed. Try again after the current operation finishes.") { store.discardPending(id) } },
         onOpenService = onOpenService, onScanInvitation = onScanInvitation, hostLabel = hostLabel,
         onChangeRoute = { id, route -> store.changeRoute(id, route) },
+        nearbyPairing = { close -> TetherNearbyPair(store, onPair = { route, code -> store.pair(route, code); Unit }, onClose = close,
+            deviceName = deviceName, onScanInvitation = onScanInvitation) },
     )
 }
 
@@ -155,6 +158,7 @@ public fun TetherWorkspaceContent(
     onScanInvitation: (suspend () -> String?)? = null,
     hostLabel: (ManagedHost) -> String = ::defaultHostLabel,
     onChangeRoute: (suspend (String, TetherRoute) -> Unit)? = null,
+    nearbyPairing: (@Composable (onClose: () -> Unit) -> Unit)? = null,
 ) {
     var pairing by rememberSaveable { mutableStateOf(false) }
     var detailVisible by rememberSaveable { mutableStateOf(false) }
@@ -171,7 +175,7 @@ public fun TetherWorkspaceContent(
                         if (!wide && detailVisible) TextButton(onClick = { detailVisible = false }, modifier = Modifier.testTag("tether.hosts.back")) { Text("Hosts") }
                     },
                     actions = { TextButton(onClick = { pairing = true },
-                        modifier = Modifier.testTag("tether.pair")) { Text("Pair host") } })
+                        modifier = Modifier.testTag("tether.pair")) { Text("Add a computer") } })
             },
         ) { insets ->
             Column(Modifier.fillMaxSize().padding(insets)) {
@@ -210,7 +214,8 @@ public fun TetherWorkspaceContent(
     }
     if (pairing) Dialog(onDismissRequest = { pairing = false }, properties = DialogProperties(usePlatformDefaultWidth = false)) {
         Surface(Modifier.fillMaxSize()) {
-            TetherPairHost(appId, onPair, onClose = { pairing = false }, onScanInvitation = onScanInvitation)
+            if (nearbyPairing != null) nearbyPairing { pairing = false }
+            else TetherPairHost(appId, onPair, onClose = { pairing = false }, onScanInvitation = onScanInvitation)
         }
     }
     editingRoute?.let { host ->
@@ -257,7 +262,7 @@ private fun EmptyHosts(onPair: () -> Unit, waiting: Boolean = false, showAction:
         Text(if (waiting) "Saved permissions will appear here. A host is online only after it answers an authenticated connection."
             else "Pair a Mac or Windows PC to use its services in this app. You can keep several hosts paired.",
             color = MaterialTheme.colorScheme.onSurfaceVariant)
-        if (!waiting && showAction) Button(onClick = onPair) { Text("Pair host") }
+        if (!waiting && showAction) Button(onClick = onPair) { Text("Add a computer") }
     }
 }
 

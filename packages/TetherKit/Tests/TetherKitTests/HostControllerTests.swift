@@ -114,6 +114,20 @@
             #expect(try TetherHostRoute.privateNetwork(address: "0:0:0:0:0:0:0:1", port: 7445).arguments() == ["--direct", "[::1]:7445"])
         }
 
+        @Test func anIdentifyingProfileNamesItsKeyFileAndRefusesUDP() throws {
+            let key = URL(fileURLWithPath: "/tmp/router-identity.key")
+            let profile = try TetherHostServiceProfile(id: "router", kind: .tcp, port: 8881, identityKeyFile: key)
+            #expect(profile.identityArguments == ["--identify", "router=/tmp/router-identity.key"])
+            #expect(try TetherHostServiceProfile(id: "api", kind: .tcp, port: 8882).identityArguments.isEmpty)
+            #expect(throws: (any Error).self) {
+                try TetherHostServiceProfile(id: "video", kind: .udp, port: 9000, identityKeyFile: key)
+            }
+            #expect(throws: (any Error).self) {
+                try TetherHostServiceProfile(id: "router", kind: .tcp, port: 8881,
+                                             identityKeyFile: URL(string: "https://example.com/key"))
+            }
+        }
+
         @Test func readinessIsObservedAndOwnerCommandsStayScoped() async throws {
             let helper = OwnerHelperFixture()
             let controller = try TetherHostController(helper: helper, configurationURL: URL(fileURLWithPath: "/tmp/synthetic-host.json"),

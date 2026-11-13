@@ -20,7 +20,7 @@ rows = []
 violations = []
 for library in info["AvailableLibraries"]:
     platform = library["SupportedPlatform"]
-    floor = (15, 0) if platform == "macos" else (18, 0)
+    floor = (14, 0) if platform == "macos" else (17, 0)
     path = artifact / library["LibraryIdentifier"] / library["LibraryPath"]
     result = subprocess.run(["xcrun", "otool", "-arch", "all", "-l", str(path)], capture_output=True, text=True, check=True)
     expected_platform = "1" if platform == "macos" else ("7" if library.get("SupportedPlatformVariant") == "simulator" else "2")

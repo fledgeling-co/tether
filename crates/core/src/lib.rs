@@ -10,9 +10,11 @@
 
 mod noise;
 mod pairing;
+mod sas;
 
 pub use noise::{Identity, NoiseHandshake, SecureTransport, MAX_CIPHERTEXT, MAX_PLAINTEXT};
 pub use pairing::{normalize_code, Confirmation, Pairing, Role};
+pub use sas::{SasClient, SasCode, SasHost, SAS_NONCE};
 
 /// Fixed failures deliberately carry no received bytes, passwords, identities or library errors.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

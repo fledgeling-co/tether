@@ -4,7 +4,7 @@ Tether owns app-scoped device trust, encrypted connections and fixed service gra
 
 ## Apple client
 
-Add the root GitHub Swift package, or `packages/TetherKit` as a local package, and link `TetherKit` and optionally `TetherUI`. Build the native artifact with `scripts/build-xcframework.sh` before opening an example. The package supports macOS 15 and iOS 18; the fold observer uses iOS 27.1 APIs behind availability checks.
+Add the root GitHub Swift package, or `packages/TetherKit` as a local package, and link `TetherKit` and optionally `TetherUI`. Build the native artifact with `scripts/build-xcframework.sh` before opening an example. The package supports macOS 14 and iOS 17; the fold observer uses iOS 27.1 APIs behind availability checks.
 
 ```swift
 import TetherKit

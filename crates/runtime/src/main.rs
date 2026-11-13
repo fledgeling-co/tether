@@ -46,6 +46,11 @@ enum HostCommand {
             help = "Fixed loopback target, for example api=tcp://127.0.0.1:8882"
         )]
         service: Vec<String>,
+        #[arg(
+            long,
+            help = "Prove the connecting device to a TCP service with a 32-byte key file the service also holds, for example api=/path/identity.key"
+        )]
+        identify: Vec<String>,
     },
     Run {
         #[arg(long)]
@@ -204,6 +209,35 @@ async fn status_output(
     }
     Ok(())
 }
+/// Read a service identity key: a private regular file holding 32 raw bytes or their base64.
+fn identity_key(path: &std::path::Path) -> Result<String> {
+    let metadata = std::fs::symlink_metadata(path)?;
+    if !metadata.is_file() || metadata.len() > 128 {
+        return Err("identity key must be a small regular file".into());
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if metadata.permissions().mode() & 0o077 != 0 {
+            return Err("identity key must not be readable by other users".into());
+        }
+    }
+    let bytes = zeroize::Zeroizing::new(std::fs::read(path)?);
+    let key = if bytes.len() == 32 {
+        bytes.to_vec()
+    } else {
+        use base64::Engine;
+        base64::engine::general_purpose::STANDARD
+            .decode(std::str::from_utf8(&bytes)?.trim())
+            .map_err(|_| "identity key is neither 32 bytes nor base64")?
+    };
+    if key.len() != 32 {
+        return Err("identity key must be 32 bytes".into());
+    }
+    use base64::Engine;
+    Ok(base64::engine::general_purpose::STANDARD.encode(key))
+}
+
 async fn execute(cli: Cli) -> Result<()> {
     match cli.command {
         Command::Host { command } => match command {
@@ -211,6 +245,7 @@ async fn execute(cli: Cli) -> Result<()> {
                 config,
                 app,
                 service,
+                identify,
             } => {
                 let mut services = BTreeMap::new();
                 for description in service {
@@ -227,12 +262,20 @@ async fn execute(cli: Cli) -> Result<()> {
                             Service {
                                 kind,
                                 target: target.parse()?,
+                                identity: None,
                             },
                         )
                         .is_some()
                     {
                         return Err("duplicate service".into());
                     }
+                }
+                for description in identify {
+                    let (name, path) = description.split_once('=').ok_or("invalid identity key")?;
+                    let service = services
+                        .get_mut(name)
+                        .ok_or("identity names an unknown service")?;
+                    service.identity = Some(identity_key(std::path::Path::new(path))?);
                 }
                 storage::create(&config, &HostConfig::new(&app, services)?)?;
             }

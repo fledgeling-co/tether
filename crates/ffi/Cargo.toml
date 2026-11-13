@@ -6,10 +6,19 @@ rust-version = "1.89"
 [lib]
 name = "tether_ffi"
 crate-type = ["staticlib", "cdylib", "rlib"]
+[features]
+default = ["media"]
+# QUIC media needs sockets and threads; the browser build leaves it out.
+media = ["dep:tether-media", "dep:tokio"]
 [dependencies]
 tether-core = { path = "../core" }
-tether-media = { path = "../media" }
-tokio = { version = "=1.54.1", features = ["rt-multi-thread", "net", "time", "sync"] }
+tether-model = { path = "../model" }
+tether-media = { path = "../media", optional = true }
+tokio = { version = "=1.54.1", features = ["rt-multi-thread", "net", "time", "sync"], optional = true }
 serde_json = "1.0"
 base64 = "0.22"
 zeroize = "1.8"
+# The browser supplies randomness through an import; see src/wasm.rs.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+getrandom02 = { package = "getrandom", version = "0.2", features = ["custom"] }
+getrandom03 = { package = "getrandom", version = "0.3" }

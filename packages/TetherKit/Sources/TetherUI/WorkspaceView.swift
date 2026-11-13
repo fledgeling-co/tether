@@ -30,6 +30,7 @@ public extension TetherConnectionState {
 public struct TetherWorkspaceView: View {
     @Bindable private var store: TetherConnectionStore
     private let serviceAction: (@MainActor (String, TetherHostService) -> Void)?
+    private let deviceName: String
     @State private var pairing = false
     @State private var error: String?
     @State private var removal: TetherManagedHost?
@@ -40,9 +41,10 @@ public struct TetherWorkspaceView: View {
     @State private var editingRoute: TetherManagedHost?
     @State private var choosingHost = false
 
-    public init(store: TetherConnectionStore,
+    /// `deviceName` is how nearby computers list this device while it pairs.
+    public init(store: TetherConnectionStore, deviceName: String = TetherNearbyPairView.defaultDeviceName,
                 onOpenService: (@MainActor (String, TetherHostService) -> Void)? = nil) {
-        self.store = store; serviceAction = onOpenService
+        self.store = store; serviceAction = onOpenService; self.deviceName = deviceName
     }
 
     public var body: some View {
@@ -55,14 +57,14 @@ public struct TetherWorkspaceView: View {
                         }
                     }.listRowBackground(store.selectedHostID == host.id ? Color.accentColor.opacity(0.12) : Color.clear)
                 }.navigationTitle("Hosts")
-                    .toolbar { Button("Pair host", systemImage: "plus") { pairing = true }.accessibilityIdentifier("tether.pair") }
+                    .toolbar { Button("Add a computer", systemImage: "plus") { pairing = true }.accessibilityIdentifier("tether.pair") }
             }
         } detail: {
             NavigationStack { selectedDetail }
         } compact: {
             nativeSplit
         }
-        .sheet(isPresented: $pairing) { TetherPairHostView(store: store) }
+        .sheet(isPresented: $pairing) { TetherNearbyPairView(store: store, deviceName: deviceName) }
         .sheet(isPresented: $choosingHost) {
             NavigationStack {
                 List(store.hosts) { host in
@@ -115,7 +117,7 @@ public struct TetherWorkspaceView: View {
             hostList
                 .navigationTitle("Hosts")
                 .navigationSplitViewColumnWidth(min: 220, ideal: 256, max: 340)
-                .toolbar { Button("Pair host", systemImage: "plus") { pairing = true }.accessibilityIdentifier("tether.pair") }
+                .toolbar { Button("Add a computer", systemImage: "plus") { pairing = true }.accessibilityIdentifier("tether.pair") }
         } detail: {
             Group {
                 if let host = store.hosts.first(where: { $0.id == store.selectedHostID }) {
@@ -124,8 +126,8 @@ public struct TetherWorkspaceView: View {
                     ContentUnavailableView {
                         Label("Your hosts", systemImage: "desktopcomputer")
                     } description: {
-                        Text("Pair a Mac or PC to use its services here. You can keep several hosts paired.")
-                    } actions: { Button("Pair host") { pairing = true }.buttonStyle(.borderedProminent) }
+                        Text("Add a Mac or PC to use its services here. You can keep several paired.")
+                    } actions: { Button("Add a computer") { pairing = true }.buttonStyle(.borderedProminent) }
                 }
             }
             #if os(iOS)
@@ -133,7 +135,7 @@ public struct TetherWorkspaceView: View {
                 Button("Hosts", systemImage: "sidebar.left") {
                     choosingHost = true
                 }.accessibilityIdentifier("tether.show-hosts")
-                Button("Pair host", systemImage: "plus") { pairing = true }.accessibilityIdentifier("tether.pair")
+                Button("Add a computer", systemImage: "plus") { pairing = true }.accessibilityIdentifier("tether.pair")
             }
             #endif
         }
@@ -141,7 +143,7 @@ public struct TetherWorkspaceView: View {
 
     @ViewBuilder private var selectedDetail: some View {
         if let host = store.hosts.first(where: { $0.id == store.selectedHostID }) { detail(host) }
-        else { ContentUnavailableView("Select a host", systemImage: "desktopcomputer", description: Text("Pair a host to begin.")) }
+        else { ContentUnavailableView("Select a host", systemImage: "desktopcomputer", description: Text("Add a computer to begin.")) }
     }
 
     private var hostList: some View {

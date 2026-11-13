@@ -1,0 +1,21 @@
+{
+  "name": "@fledgeling/tether-mcp",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Authenticated, account-scoped MCP access to fixed Tether services.",
+  "license": "MIT",
+  "engines": {"node": ">=22"},
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "bin": {"tether-mcp": "./dist/cli.js"},
+  "exports": {".": "./dist/index.js", "./node": "./dist/node.js"},
+  "files": ["dist", "README.md"],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "npm run build && node --test test/*.test.mjs",
+    "test:tether": "npm run build && node --test test/tether.integration.mjs"
+  },
+  "dependencies": {"@modelcontextprotocol/server":"2.4.0", "@modelcontextprotocol/node":"2.1.2", "jose":"6.2.15", "zod":"^4.1.12"},
+  "devDependencies": {"@modelcontextprotocol/client":"2.4.0", "@types/node":"^22.19.0", "typescript":"^5.9.3"}
+}

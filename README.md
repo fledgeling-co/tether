@@ -8,12 +8,14 @@ Tether connects iOS, Android, macOS and Windows apps to services on a paired Mac
 
 This is a pre-release SDK, not a hosted relay service. [Security boundaries](SECURITY.md) and [what has been verified](docs/VALIDATION.md) apply to every integration.
 
+[How Tether works](docs/how-tether-works.html) walks through the roles, pairing, every later connection, storage and the Tailscale work in progress, with diagrams.
+
 ## Native in your app
 
 | Platform | Transport | Optional native UI | Role |
 | --- | --- | --- | --- |
-| macOS 15+ | Swift `TetherKit` | SwiftUI `TetherUI` | Host and client; Apple Silicon and Intel |
-| iOS 18+ | Swift `TetherKit` | SwiftUI `TetherUI` | Companion client; arm64 device and Apple Silicon simulator |
+| macOS 14+ | Swift `TetherKit` | SwiftUI `TetherUI` | Host and client; Apple Silicon and Intel |
+| iOS 17+ | Swift `TetherKit` | SwiftUI `TetherUI` | Companion client; arm64 device and Apple Silicon simulator |
 | Android API 26+ | Kotlin `tether-core` with JNI | Material 3 Compose `tether-ui` | Companion client; arm64-v8a and x86_64 |
 | Windows x64 | .NET `Tether.Core` | WinUI `Tether.WinUI` | Host and client; .NET 10 example |
 
@@ -86,6 +88,10 @@ Your host maps named services to fixed loopback targets. Clients cannot choose a
 The relay keeps bounded routing state in memory and stores no application data. It runs in a container deployment. It needs persistent connections; it cannot currently run unchanged as independent Vercel Functions. [Self-hosting](deploy/README.md).
 
 A sleeping host is offline. The relay holds no cloud copy of application data. Noise/SPAKE2 composition and native lifecycle code have not received a professional cryptographic audit. Report vulnerabilities [privately](https://github.com/fledgeling-co/tether/security/advisories/new).
+
+## Authenticated MCP data access
+
+The source-built [Tether MCP package](packages/mcp/README.md) exposes account-authorized service data over HTTP MCP. It includes a PageIndex adapter, per-user sharing checks and fixed Tether-forward transport. A host-provided identity verifier and current user grants are required; pairing alone grants no account access. [Integration and limits](docs/MCP.md).
 
 ## Contribute
 

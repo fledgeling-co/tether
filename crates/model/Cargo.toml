@@ -1,0 +1,11 @@
+[package]
+name = "tether-model"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.89"
+description = "Shared, I/O-free Tether client logic: the nearby pairing protocol and the text and state every UI renders."
+
+[dependencies]
+tether-core = { path = "../core" }
+serde_json = "1.0"
+base64 = "0.22"

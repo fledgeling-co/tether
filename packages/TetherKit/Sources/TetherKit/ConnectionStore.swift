@@ -16,6 +16,12 @@ public struct TetherHostStatus: Codable, Equatable, Sendable {
     }
 }
 
+public enum TetherNearbyResult: Equatable, Sendable {
+    case paired(TetherManagedHost)
+    case declined
+    case expired
+}
+
 public enum TetherLocalForgetResult: Equatable, Sendable {
     case localTrustRemovedHostUnchanged
 }
@@ -65,9 +71,23 @@ public protocol TetherClientManaging: Sendable {
     func discardPendingPairing(_ record: TetherPeerRecord) async throws
     func openService(_ name: String, kind: TetherServiceKind, peer: TetherPeerRecord) async throws -> TetherServiceStream
     func openMedia(_ name: String, peer: TetherPeerRecord) async throws -> TetherMediaSession
+    func pairNearby(route: TetherRoute, deviceName: String, deviceKind: String,
+                    onCode: @escaping @Sendable (TetherNearbyCode) async -> Void,
+                    onHostApproved: @escaping @Sendable () async -> Void,
+                    onStoring: @escaping @Sendable () async -> Void,
+                    decision: @escaping @Sendable () async -> Bool?) async throws -> TetherNearbyOutcome
 }
 
 public extension TetherClientManaging {
+    func pairNearby(route _: TetherRoute, deviceName _: String, deviceKind _: String,
+                    onCode _: @escaping @Sendable (TetherNearbyCode) async -> Void,
+                    onHostApproved _: @escaping @Sendable () async -> Void,
+                    onStoring _: @escaping @Sendable () async -> Void,
+                    decision _: @escaping @Sendable () async -> Bool?) async throws -> TetherNearbyOutcome
+    {
+        throw TetherClientError.nearbyRefused
+    }
+
     func openMedia(_: String, peer _: TetherPeerRecord) async throws -> TetherMediaSession {
         throw TetherClientError.mediaUnavailable
     }
@@ -378,6 +398,29 @@ public final class TetherConnectionStore {
             streamReservations.removeValue(forKey: hostID)
         } else {
             streamReservations[hostID] = remaining
+        }
+    }
+
+    /// Pairs with a nearby computer by comparing a code, then selects and connects it.
+    public func pairNearby(route: TetherRoute, deviceName: String, deviceKind: String,
+                           onCode: @escaping @Sendable (TetherNearbyCode) async -> Void,
+                           onHostApproved: @escaping @Sendable () async -> Void,
+                           onStoring: @escaping @Sendable () async -> Void = {},
+                           decision: @escaping @Sendable () async -> Bool?) async throws -> TetherNearbyResult
+    {
+        do {
+            let outcome = try await client.pairNearby(route: route, deviceName: deviceName, deviceKind: deviceKind,
+                                                      onCode: onCode, onHostApproved: onHostApproved, onStoring: onStoring,
+                                                      decision: decision)
+            guard case let .paired(record) = outcome else { return outcome == .declined ? .declined : .expired }
+            try await load()
+            let id = record.hostKey.base64EncodedString()
+            selectedHostID = id
+            connect(hostID: id)
+            return .paired(try host(id))
+        } catch {
+            try? await load()
+            throw error
         }
     }
 

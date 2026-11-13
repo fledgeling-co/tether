@@ -2,7 +2,7 @@
 import PackageDescription
 let package = Package(
     name: "TetherKit",
-    platforms: [.macOS(.v15), .iOS(.v18)],
+    platforms: [.macOS(.v14), .iOS(.v17)],
     products: [.library(name: "TetherKit", targets: ["TetherKit"]),
                .library(name: "TetherUI", targets: ["TetherUI"]),
                .library(name: "TetherDuoUI", targets: ["TetherDuoUI"])],

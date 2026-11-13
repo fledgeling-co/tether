@@ -17,6 +17,7 @@ import TetherKit
     @State private var removing: TetherHostClient?
     @State private var stopping = false
     @State private var presenceChecked: Date?
+    @State private var invited: Set<String> = []
     public init(controller: TetherHostController, initialServices: [TetherHostServiceProfile]) {
         self.controller = controller; self.initialServices = initialServices
     }
@@ -41,9 +42,12 @@ import TetherKit
                     Button("Start hosting") { start() }
                 }
             } header: { Text("Host access") } footer: {
-                Text("Private access uses your network or VPN. Cloud access requires an authorized relay registration. Changing access stops the current host first.")
+                Text("Private access uses your network or VPN; listen on 0.0.0.0 so nearby devices can find this Mac. Cloud access requires an authorized relay registration. Changing access stops the current host first.")
             }
-            Section("Pair a device") {
+            if running, !cloud {
+                TetherNearbyDevicesSection(controller: controller, hostName: Host.current().localizedName ?? "Mac", invited: $invited)
+            }
+            Section("Pair with a code") {
                 Button("Open pairing window") { perform { try await controller.openPairingWindow() } }.disabled(!running)
                 if let code = controller.pairingCode, let expiry = controller.pairingExpiresAt {
                     Text(code).font(.largeTitle.monospaced().weight(.semibold)).privacySensitive()
@@ -70,6 +74,7 @@ import TetherKit
                 if controller.clients.isEmpty { Text("No paired clients").foregroundStyle(.secondary) }
                 ForEach(controller.clients) { client in
                     VStack(alignment: .leading, spacing: 6) {
+                        if let name = client.name { Text(name) }
                         Text(client.device).font(.caption.monospaced()).textSelection(.enabled)
                         Text(client.services.joined(separator: ", ")).foregroundStyle(.secondary)
                         Label(presence(client), systemImage: (client.activeSessions ?? 0) > 0 && running ? "checkmark.circle.fill" : "network.slash").font(.caption).foregroundStyle(.secondary)
@@ -82,6 +87,7 @@ import TetherKit
             }
             if let error { Section { Text(error).foregroundStyle(.red) } }
         }.formStyle(.grouped).disabled(busy)
+        .tetherNearbyRequests(controller, invited: invited)
         .task {
             do { try await controller.refreshClients(); presenceChecked = .now } catch {}
         }
@@ -126,6 +132,10 @@ import TetherKit
                 route = .privateNetwork(address: bindAddress, port: p)
             }
             try await controller.start(route: route)
+            if !cloud {
+                // Phones on this network list the Mac by its own name. A loopback listener is invisible to them.
+                try? controller.announceNearby(name: Host.current().localizedName ?? "Mac")
+            }
         }
     }
     private func invitation(code: String, expiry: Date) -> URL? {

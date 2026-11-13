@@ -1,6 +1,12 @@
 //! Process-local bounded C ABI. JSON requests/responses may contain secrets; this crate never logs.
 //! Handles are local ownership tokens, not an authorization boundary between untrusted callers.
+//! Besides the cryptography, it carries the shared pairing flows (`nearby.*`, `code.*`, `flow.*`)
+//! and the copy every kit renders (`ui.*`, `discovery.*`), so no platform re-derives either.
+#[cfg(feature = "media")]
 mod media;
+mod model;
+#[cfg(target_arch = "wasm32")]
+mod wasm;
 use base64::{engine::general_purpose::STANDARD, Engine};
 use serde_json::{json, Value};
 use std::{
@@ -8,7 +14,9 @@ use std::{
     ffi::{c_char, CString},
     sync::{Mutex, OnceLock},
 };
-use tether_core::{Confirmation, Identity, NoiseHandshake, Pairing, Role, SecureTransport};
+use tether_core::{
+    Confirmation, Identity, NoiseHandshake, Pairing, Role, SasClient, SecureTransport,
+};
 use zeroize::{Zeroize, Zeroizing};
 const MAX_INPUT: usize = 131_072;
 const MAX_HANDLES: usize = 256;
@@ -19,6 +27,9 @@ enum Object {
     Transport(Box<SecureTransport>),
     Pairing(Box<Pairing>),
     Proof(Confirmation),
+    Sas(Box<SasClient>),
+    Nearby(Box<tether_model::nearby::NearbyClient>),
+    Code(Box<tether_model::code::CodeClient>),
 }
 struct Registry {
     next: u64,
@@ -215,6 +226,29 @@ fn perform(request: &Value, registry: &mut Registry) -> Result<Value, &'static s
                 .map_err(|_| "authentication_refused")?;
             Ok(json!({"verified":true}))
         }
+        // Nearby pairing is client-side here; hosts run the Rust runtime, which owns admission.
+        "sas.start" => {
+            let (sas, commitment) = SasClient::start(
+                text(request, "app")?,
+                fixed(request, "binding")?,
+                fixed(request, "clientKey")?,
+                fixed(request, "hostKey")?,
+            )
+            .map_err(|_| "crypto_refused")?;
+            let id = registry.insert(Object::Sas(Box::new(sas)))?;
+            Ok(json!({"handle":id,"data":encoded(commitment)}))
+        }
+        "sas.finish" => {
+            let id = handle(request)?;
+            let data = bytes(request, "data")?;
+            let Object::Sas(sas) = registry.take(id)? else {
+                return Err("invalid_handle_type");
+            };
+            let (reveal, code) = sas.finish(&data).map_err(|_| "crypto_refused")?;
+            Ok(json!({"data":encoded(reveal),"code":code.digits()}))
+        }
+        "nearby.begin" | "code.begin" | "flow.receive" | "flow.tick" | "flow.shown"
+        | "flow.stored" | "flow.state" | "flow.view" => model::flow(command, request, registry),
         "destroy" => {
             registry.take(handle(request)?)?;
             Ok(json!({}))
@@ -222,16 +256,30 @@ fn perform(request: &Value, registry: &mut Registry) -> Result<Value, &'static s
         _ => Err("invalid_command"),
     }
 }
+#[cfg(feature = "media")]
+fn media(request: &Value) -> Result<Value, &'static str> {
+    media::perform(request)
+}
+#[cfg(not(feature = "media"))]
+fn media(_: &Value) -> Result<Value, &'static str> {
+    Err("media_unavailable")
+}
 fn call(input: &[u8]) -> Value {
     let request = match serde_json::from_slice::<Value>(input) {
         Ok(value) if value.is_object() => SensitiveJson(value),
         _ => return json!({"ok":false,"error":"invalid_json"}),
     };
-    if request.0["command"]
-        .as_str()
-        .is_some_and(|command| command.starts_with("media."))
-    {
-        return match media::perform(&request.0) {
+    let command = request.0["command"].as_str().unwrap_or("");
+    // Neither needs the registry: media handles have their own, and copy is stateless.
+    let unlocked = if command.starts_with("media.") {
+        Some(media(&request.0))
+    } else if command.starts_with("ui.") || command.starts_with("discovery.") {
+        Some(model::stateless(command, &request.0))
+    } else {
+        None
+    };
+    if let Some(result) = unlocked {
+        return match result {
             Ok(mut output) => {
                 output["ok"] = json!(true);
                 output
@@ -404,5 +452,41 @@ mod tests {
             json!({"command":"transport.decrypt","handle":tb["handle"],"data":cipher["data"]}),
         );
         assert_eq!(plain["data"], encoded(b"native interop"));
+    }
+}
+
+#[cfg(test)]
+mod sas_tests {
+    use super::*;
+    #[test]
+    fn ffi_nearby_client_agrees_with_the_host_and_consumes_its_handle() {
+        let mut registry = Registry {
+            next: 1,
+            objects: HashMap::new(),
+        };
+        let (binding, client, host) = ([7u8; 32], [1u8; 32], [2u8; 32]);
+        let start = perform(
+            &json!({"command":"sas.start","app":"app.test","binding":encoded(binding),"clientKey":encoded(client),"hostKey":encoded(host)}),
+            &mut registry,
+        )
+        .unwrap();
+        let commitment = STANDARD.decode(start["data"].as_str().unwrap()).unwrap();
+        let (host_side, nonce) =
+            tether_core::SasHost::start("app.test", binding, client, host, &commitment).unwrap();
+        let finish = perform(
+            &json!({"command":"sas.finish","handle":start["handle"],"data":encoded(nonce)}),
+            &mut registry,
+        )
+        .unwrap();
+        let reveal = STANDARD.decode(finish["data"].as_str().unwrap()).unwrap();
+        assert_eq!(
+            host_side.finish(&reveal).unwrap().digits(),
+            finish["code"].as_str().unwrap()
+        );
+        assert!(perform(
+            &json!({"command":"sas.finish","handle":start["handle"],"data":encoded(nonce)}),
+            &mut registry
+        )
+        .is_err());
     }
 }

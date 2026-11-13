@@ -33,6 +33,13 @@ class TetherConnectionStore(private val client:TetherClientManaging):Closeable {
     }
     private suspend fun <T> exclusive(id:String,block:suspend()->T):T=operations.run(id,block)
     suspend fun pair(route:TetherRoute,code:String):PeerRecord { try { val peer=client.pair(route,code); load(); selectHost(peer.id); scope.launch { runCatching { reconnect(peer.id) } }; return peer } catch(e:Exception) { withContext(NonCancellable) { runCatching { load() } }; throw e } }
+    /** Pairs with a nearby computer by comparing a code, then selects and connects it. */
+    suspend fun pairNearby(route:TetherRoute,deviceName:String,deviceKind:String,onCode:suspend(String)->Unit,onHostApproved:suspend()->Unit,decision:()->Boolean?,onStoring:suspend()->Unit={}):NearbyOutcome {
+        try { val outcome=client.pairNearby(route,deviceName,deviceKind,onCode,onHostApproved,decision,onStoring)
+            if(outcome is NearbyOutcome.Paired) { load(); selectHost(outcome.record.id); scope.launch { runCatching { reconnect(outcome.record.id) } } }
+            return outcome
+        } catch(e:Exception) { withContext(NonCancellable) { runCatching { load() } }; throw e }
+    }
     private fun valid(id:String,ticket:Long,peer:PeerRecord):Boolean = !closed && generations[id]==ticket && mutableHosts.value.any { it.id==id && it.record==peer }
     private fun publish(id:String,ticket:Long,peer:PeerRecord,newState:ConnectionState,services:List<HostService> = emptyList()):Boolean = synchronized(state) {
         if(!valid(id,ticket,peer))false else { mutableHosts.value=mutableHosts.value.map { if(it.id==id)it.copy(state=newState,services=services,notice=notice(newState)) else it }; true }

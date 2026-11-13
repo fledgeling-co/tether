@@ -1,6 +1,7 @@
 use crate::{
     carrier::{self, Carrier, Result, WAIT},
     controls::{HostStatus, OwnerInspection, PairingStatus, ServiceSummary},
+    nearby,
     protocol::{self, Session},
     storage::{self, Device, HostConfig, ServiceKind},
     transfer,
@@ -17,7 +18,7 @@ use std::{
     sync::{Arc, Mutex},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
-use tether_core::{Confirmation, Identity, Pairing, Role};
+use tether_core::{Confirmation, Identity, Pairing, Role, SasHost};
 use tokio::{
     net::{TcpListener, TcpStream, UdpSocket},
     sync::Semaphore,
@@ -53,6 +54,7 @@ struct Inner {
     identity: Identity,
     registration: SigningKey,
     window: Mutex<Option<Window>>,
+    nearby: Mutex<nearby::State>,
     streams: Arc<Semaphore>,
     services: Arc<Semaphore>,
     presence: Mutex<HashMap<[u8; 32], Presence>>,
@@ -96,6 +98,7 @@ impl Host {
             identity: config.identity()?,
             registration: SigningKey::from_bytes(&storage::key(&config.registration_key)?),
             window: Mutex::new(None),
+            nearby: Mutex::new(nearby::State::default()),
             streams: Arc::new(Semaphore::new(TOTAL_SESSIONS)),
             services: Arc::new(Semaphore::new(STREAMS)),
             presence: Mutex::new(HashMap::new()),
@@ -112,6 +115,7 @@ impl Host {
         Ok(OwnerInspection {
             app_id: current.app_id,
             host_id: self.public_route_id(),
+            host_key: STANDARD.encode(self.0.identity.public()),
             services: current
                 .services
                 .into_iter()
@@ -188,7 +192,7 @@ impl Host {
             .retain(|_, entry| entry.active > 0 || entry.seen.elapsed() < Duration::from_secs(45));
         Ok(json!(config.devices.iter().map(|(id,device)| {
             let entry=storage::key(&device.public_key).ok().and_then(|key|presence.get(&key));
-            json!({"device":id,"services":device.services,"recently_seen":entry.is_some_and(|entry|entry.seen.elapsed()<Duration::from_secs(45)),"active_sessions":entry.map_or(0,|entry|entry.active),"last_seen_unix_ms":entry.map(|entry|entry.unix_ms)})
+            json!({"device":id,"name":device.name,"services":device.services,"recently_seen":entry.is_some_and(|entry|entry.seen.elapsed()<Duration::from_secs(45)),"active_sessions":entry.map_or(0,|entry|entry.active),"last_seen_unix_ms":entry.map(|entry|entry.unix_ms)})
         }).collect::<Vec<_>>()))
     }
     pub fn owner_revoke(&self, expected_app: &str, device: &str) -> Result<()> {
@@ -287,7 +291,9 @@ impl Host {
         let config = self.current()?;
         if !config.authorize(peer, service)
             || config.services.get(service).is_none_or(|current| {
-                current.kind != expected.kind || current.target != expected.target
+                current.kind != expected.kind
+                    || current.target != expected.target
+                    || current.identity != expected.identity
             })
         {
             return Err("service was removed or changed".into());
@@ -327,6 +333,8 @@ impl Host {
         Ok(window.services.clone())
     }
     pub async fn handle(&self, carrier: Carrier) -> Result<()> {
+        // Nearby pairing is for the local network; a relay carrier can't prompt the owner.
+        let direct = matches!(carrier, Carrier::Direct(_));
         let mut session = protocol::respond(carrier, &self.0.identity, &self.0.app).await?;
         let request = session.receive().await?;
         if request["v"] != 1 {
@@ -339,6 +347,7 @@ impl Host {
         };
         match request["type"].as_str() {
             Some("pair.start") => self.pair(session, request).await,
+            Some("pair.nearby") => self.pair_nearby(session, request, direct).await,
             Some("media.open") => self.media_session(session, request).await,
             Some("host.status") | Some("peer.leave") => {
                 if request.as_object().is_none_or(|fields| fields.len() != 2) {
@@ -421,7 +430,15 @@ impl Host {
                 let host = self.clone();
                 match target.kind {
                     ServiceKind::Tcp => {
-                        let socket = timeout(WAIT, TcpStream::connect(target.target)).await??;
+                        let mut socket = timeout(WAIT, TcpStream::connect(target.target)).await??;
+                        if let Some(identity) = &target.identity {
+                            let shared = storage::key(identity)?;
+                            timeout(
+                                WAIT,
+                                crate::identify::present(&mut socket, &shared, &service, &peer),
+                            )
+                            .await??;
+                        }
                         self.anchored(&peer, &service, &target)?;
                         session
                             .send(json!({"type":"service.ready","v":1,"kind":"tcp"}))
@@ -579,6 +596,16 @@ impl Host {
         confirmation
             .verify_peer(&STANDARD.decode(confirm["proof"].as_str().ok_or("missing proof")?)?)?;
         let services = self.consume(generation)?;
+        self.complete_pairing(session, services, None).await
+    }
+    /// Both sides have authenticated the pairing. The client stores a pending record before ack;
+    /// the host stores the device only after ack, and done confirms the client's record.
+    async fn complete_pairing(
+        &self,
+        mut session: Session,
+        services: BTreeSet<String>,
+        name: Option<String>,
+    ) -> Result<()> {
         session.send(json!({"type":"pair.ready","v":1})).await?;
         let ack = session.receive().await?;
         if ack["type"] != "pair.ack" || ack["v"] != 1 {
@@ -599,6 +626,7 @@ impl Host {
                     Device {
                         public_key: STANDARD.encode(public),
                         services,
+                        name,
                     },
                 );
                 Ok(())
@@ -607,6 +635,137 @@ impl Host {
         .await??;
         drop(self.activity(public)?);
         session.send(json!({"type":"pair.done","v":1})).await
+    }
+    /// Pairing by comparing a code. Both owners see the same six digits; trust is stored only
+    /// after this host's owner and the requesting device have each approved.
+    async fn pair_nearby(
+        &self,
+        mut session: Session,
+        request: serde_json::Value,
+        direct: bool,
+    ) -> Result<()> {
+        let refuse = |code: &str| json!({"type":"error","v":1,"code":code});
+        if !direct {
+            return session.send(refuse("relay_refused")).await;
+        }
+        let allow = self.nearby_state()?.allows();
+        if !allow {
+            return session.send(refuse("nearby_closed")).await;
+        }
+        if self.known_peer(&session.peer)? {
+            return session.send(refuse("already_paired")).await;
+        }
+        let paused = self.nearby_state()?.paused(&session.peer, Instant::now());
+        if paused {
+            return session.send(refuse("paused")).await;
+        }
+        let commitment =
+            STANDARD.decode(request["commit"].as_str().ok_or("missing commitment")?)?;
+        let name = nearby::label(request["name"].as_str().unwrap_or(""), "Device");
+        let kind = nearby::label(request["kind"].as_str().unwrap_or(""), "Device");
+        let (exchange, nonce) = SasHost::start(
+            &self.0.app,
+            session.binding,
+            session.peer,
+            self.0.identity.public(),
+            &commitment,
+        )?;
+        let issued = self.nearby_state()?.issue(Instant::now());
+        if !issued {
+            return session.send(refuse("nearby_closed")).await;
+        }
+        // From here, an exchange that stops before a valid reveal counts against the host.
+        let revealed: Result<tether_core::SasCode> = async {
+            session
+                .send(json!({"type":"pair.nearby.nonce","v":1,"nonce":STANDARD.encode(nonce)}))
+                .await?;
+            let reveal = session.receive().await?;
+            if reveal["type"] != "pair.nearby.reveal" || reveal["v"] != 1 {
+                return Err("pairing refused".into());
+            }
+            Ok(exchange
+                .finish(&STANDARD.decode(reveal["nonce"].as_str().ok_or("missing nonce")?)?)?)
+        }
+        .await;
+        let code = match revealed {
+            Ok(code) => code,
+            Err(error) => {
+                self.nearby_state()?.unfinished(Instant::now());
+                return Err(error);
+            }
+        };
+        let admission =
+            self.nearby_state()?
+                .admit(session.peer, name.clone(), kind, code, Instant::now());
+        let id = match admission {
+            nearby::Admission::Admitted(id) => id,
+            nearby::Admission::Paused => return session.send(refuse("paused")).await,
+            nearby::Admission::Busy => return session.send(refuse("busy")).await,
+            nearby::Admission::Closed => return session.send(refuse("nearby_closed")).await,
+        };
+        let result = self.hold_nearby(&mut session, id).await;
+        self.nearby_state()?.forget(id);
+        match result? {
+            true => {
+                let services = self.current()?.services.keys().cloned().collect();
+                self.complete_pairing(session, services, Some(name)).await
+            }
+            false => Ok(()),
+        }
+    }
+    /// Answers the client's polls until the request is ready, declined or expired.
+    async fn hold_nearby(&self, session: &mut Session, id: u64) -> Result<bool> {
+        session.send(json!({"type":"pair.nearby.held","v":1,"expires_in_seconds":nearby::LIFETIME.as_secs()})).await?;
+        let mut last = Instant::now();
+        loop {
+            let poll = session.receive().await?;
+            if poll["type"] != "pair.nearby.poll" || poll["v"] != 1 {
+                return Err("pairing refused".into());
+            }
+            let wait = nearby::POLL_FLOOR.saturating_sub(last.elapsed());
+            if !wait.is_zero() {
+                tokio::time::sleep(wait).await;
+            }
+            last = Instant::now();
+            let client = poll["approve"].as_bool();
+            let standing = self.nearby_state()?.poll(id, client, Instant::now());
+            match standing {
+                nearby::Standing::Ready => return Ok(true),
+                nearby::Standing::Waiting { host_approved } => {
+                    session.send(json!({"type":"pair.nearby.status","v":1,"state":"waiting","host_approved":host_approved})).await?
+                }
+                nearby::Standing::Declined => {
+                    session.send(json!({"type":"pair.nearby.status","v":1,"state":"declined"})).await?;
+                    return Ok(false);
+                }
+                nearby::Standing::Expired | nearby::Standing::Gone => {
+                    session.send(json!({"type":"pair.nearby.status","v":1,"state":"expired"})).await?;
+                    return Ok(false);
+                }
+            }
+        }
+    }
+    fn nearby_state(&self) -> Result<std::sync::MutexGuard<'_, nearby::State>> {
+        self.0
+            .nearby
+            .lock()
+            .map_err(|_| "nearby pairing unavailable".into())
+    }
+    pub fn owner_nearby(&self, expected_app: &str) -> Result<serde_json::Value> {
+        self.owner_scope(expected_app)?;
+        Ok(self.nearby_state()?.listing(Instant::now()))
+    }
+    pub fn owner_nearby_decide(&self, expected_app: &str, id: u64, approve: bool) -> Result<()> {
+        self.owner_scope(expected_app)?;
+        if !self.nearby_state()?.decide(id, approve, Instant::now()) {
+            return Err("request ended".into());
+        }
+        Ok(())
+    }
+    pub fn owner_nearby_allow(&self, expected_app: &str, allow: bool) -> Result<()> {
+        self.owner_scope(expected_app)?;
+        self.nearby_state()?.set_allow(allow);
+        Ok(())
     }
     pub async fn serve_direct(&self, listener: TcpListener) -> Result<()> {
         let bind = listener.local_addr()?.ip();
@@ -862,6 +1021,7 @@ mod tests {
             storage::Service {
                 kind: ServiceKind::Tcp,
                 target: "127.0.0.1:1".parse()?,
+                identity: None,
             },
         )]);
         storage::create(&file, &HostConfig::new("test.app", services)?)?;
@@ -877,6 +1037,7 @@ mod tests {
                 Device {
                     public_key: STANDARD.encode(peer),
                     services: BTreeSet::from(["api".into()]),
+                    name: None,
                 },
             );
             Ok(())

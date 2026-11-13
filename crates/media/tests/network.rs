@@ -152,9 +152,9 @@ async fn bounded_receive_queue_counts_drops_without_allocating_unbounded_packets
     let server = Server::bind("127.0.0.1:0".parse()?)?;
     let (offer, _guard) = server.open(context(1), target, Arc::new(|| true))?;
     let client = Client::connect(server.address()?, offer).await?;
-    for _ in 0..96 {
+    for _ in 0..tether_media::RECEIVE_QUEUE * 3 {
         let _ = client.send(&[1; 100]);
-        sleep(Duration::from_millis(1)).await;
+        sleep(Duration::from_micros(250)).await;
     }
     sleep(Duration::from_millis(50)).await;
     assert!(client.stats().dropped > 0);
@@ -162,7 +162,7 @@ async fn bounded_receive_queue_counts_drops_without_allocating_unbounded_packets
     while client.receive().is_some() {
         count += 1;
     }
-    assert!(count <= 32);
+    assert!(count <= tether_media::RECEIVE_QUEUE);
     echo.abort();
     Ok(())
 }

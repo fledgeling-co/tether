@@ -38,6 +38,11 @@
         private let writer = DispatchQueue(label: "tether.owner-pipe.writer", qos: .userInitiated)
         private var process: Process?
         private var input: Pipe?
+        /// The running host's process, so an app can tell its loopback connections from others.
+        func processIdentifier() -> Int32? {
+            guard let process, process.isRunning else { return nil }
+            return process.processIdentifier
+        }
         private var stopping: Task<Bool, Never>?
         private var reader: Task<Void, Never>?
         private var events: AsyncThrowingStream<HostEvent, Error>.Continuation?
@@ -121,8 +126,17 @@
         }
 
         func request(command: String, expectedApp: String, clientID: String?) async throws -> Data {
+            try await request(command: command, expectedApp: expectedApp, clientID: clientID, fields: [:])
+        }
+
+        func request(command: String, expectedApp: String, fields: [String: any Sendable]) async throws -> Data {
+            try await request(command: command, expectedApp: expectedApp, clientID: nil, fields: fields)
+        }
+
+        private func request(command: String, expectedApp: String, clientID: String?, fields: [String: any Sendable]) async throws -> Data {
             try Task.checkCancellation()
-            guard ["pair-code", "pairing-status", "clients", "revoke", "inspect"].contains(command),
+            guard ["pair-code", "pairing-status", "clients", "revoke", "inspect", "nearby", "nearby-decide", "nearby-allow"].contains(command),
+                  Set(fields.keys).isSubset(of: ["nearby_id", "approve"]),
                   stopping == nil, process?.isRunning == true, let input, pending.count < 8
             else {
                 throw TetherHostControllerError.helperFailed
@@ -131,6 +145,9 @@
             var request: [String: Any] = ["v": 1, "request_id": id, "command": command, "expected_app": expectedApp]
             if let clientID {
                 request["client_id"] = clientID
+            }
+            for (key, value) in fields {
+                request[key] = value
             }
             var bytes = try JSONSerialization.data(withJSONObject: request); bytes.append(10)
             guard bytes.count <= 2048 else { throw TetherHostControllerError.invalidProfile }

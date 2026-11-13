@@ -4,6 +4,12 @@ import Foundation
 public enum TetherClientError: Error, Sendable {
     case invalidRoute, timeout, connectionClosed, invalidFrame, invalidProtocol
     case hostCapacity, mediaUnavailable, mediaBackpressure, peerRevoked, identityMismatch, pairingExists, pairingPending, serviceRefused, operationInProgress, streamLimit
+    /// Nearby pairing: the host isn't accepting nearby requests, or only over the local network.
+    case nearbyRefused
+    /// Nearby pairing: this device was declined repeatedly and is paused for a while.
+    case nearbyPaused
+    /// Nearby pairing: the host is already showing other requests.
+    case nearbyBusy
 }
 
 /// No automatic fallback. Changing between private and cloud routes is always a caller decision.

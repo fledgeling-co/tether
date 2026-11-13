@@ -93,6 +93,7 @@ impl Fixture {
                 Service {
                     kind: ServiceKind::Tcp,
                     target: tcp_address,
+                    identity: None,
                 },
             ),
             (
@@ -100,6 +101,7 @@ impl Fixture {
                 Service {
                     kind: ServiceKind::Udp,
                     target: udp_address,
+                    identity: None,
                 },
             ),
         ]);
@@ -688,6 +690,7 @@ fn relay_urls_and_private_configuration_fail_closed() -> Result<()> {
         Service {
             kind: ServiceKind::Tcp,
             target: "8.8.8.8:80".parse()?,
+            identity: None,
         },
     )]);
     assert!(HostConfig::new("test.app", services).is_err());
@@ -1189,6 +1192,7 @@ async fn device_capacity_remains_manageable_and_refused_pair_commit_preserves_pr
                 storage::Device {
                     public_key: STANDARD.encode(public),
                     services: std::collections::BTreeSet::from(["api".into()]),
+                    name: None,
                 },
             );
         }
@@ -1249,5 +1253,241 @@ async fn simultaneous_four_megabyte_tcp_echo_does_not_deadlock_either_carrier() 
             0
         );
     }
+    Ok(())
+}
+
+/// Drives a nearby pairing: the host owner and the device owner each answer once both codes show.
+async fn nearby(
+    f: &Fixture,
+    route: Route,
+    name: &str,
+    host_answer: Option<bool>,
+    device_answer: bool,
+) -> Result<(
+    client::NearbyOutcome,
+    Option<String>,
+    Option<String>,
+    PathBuf,
+)> {
+    let path = f.root.join(format!("{}.json", rand::random::<u64>()));
+    let (decide, decision) = tokio::sync::watch::channel(None);
+    let shown = Arc::new(std::sync::Mutex::new(None::<String>));
+    let seen = shown.clone();
+    let pairing = client::pair_nearby(
+        &path,
+        "test.app",
+        route,
+        name,
+        "iPhone",
+        move |code| {
+            *seen.lock().unwrap() = Some(code.to_owned());
+        },
+        decision,
+    );
+    let host = f.host.clone();
+    let shown_for_driver = shown.clone();
+    let driver = async move {
+        let mut host_code = None;
+        for _ in 0..200 {
+            let listing = host.owner_nearby("test.app")?;
+            if let Some(request) = listing["requests"].as_array().and_then(|list| list.first()) {
+                if shown_for_driver.lock().unwrap().is_some() {
+                    host_code = request["code"].as_str().map(str::to_owned);
+                    if let Some(answer) = host_answer {
+                        host.owner_nearby_decide(
+                            "test.app",
+                            request["id"].as_u64().unwrap(),
+                            answer,
+                        )?;
+                    }
+                    let _ = decide.send(Some(device_answer));
+                    break;
+                }
+            }
+            sleep(Duration::from_millis(25)).await;
+        }
+        Ok::<_, tether::carrier::Error>(host_code)
+    };
+    let (outcome, host_code) = tokio::join!(pairing, driver);
+    let device_code = shown.lock().unwrap().clone();
+    Ok((outcome?, device_code, host_code?, path))
+}
+
+#[tokio::test]
+async fn nearby_pairing_shows_one_code_and_needs_both_approvals() -> Result<()> {
+    let f = Fixture::new(false).await?;
+    let (outcome, device_code, host_code, path) =
+        nearby(&f, f.route.clone(), "Field iPhone", Some(true), true).await?;
+    assert_eq!(outcome, client::NearbyOutcome::Paired);
+    let code = device_code.expect("device showed a code");
+    assert_eq!(code.len(), 6);
+    assert_eq!(Some(code), host_code);
+    let devices = storage::load::<HostConfig>(&f.config)?.devices;
+    assert_eq!(devices.len(), 1);
+    assert_eq!(
+        devices.values().next().unwrap().name.as_deref(),
+        Some("Field iPhone")
+    );
+    assert!(storage::load::<ClientConfig>(&path)?.confirmed);
+    assert!(client::service(&path, "api", ServiceKind::Tcp, false)
+        .await
+        .is_ok());
+    assert!(f.host.owner_nearby("test.app")?["requests"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+    Ok(())
+}
+
+#[tokio::test]
+async fn nearby_pairing_stores_nothing_when_either_owner_declines() -> Result<()> {
+    let f = Fixture::new(false).await?;
+    let (outcome, _, _, path) = nearby(&f, f.route.clone(), "Phone", Some(false), true).await?;
+    assert_eq!(outcome, client::NearbyOutcome::Declined);
+    assert!(!path.exists());
+    let (outcome, _, _, path) = nearby(&f, f.route.clone(), "Phone", Some(true), false).await?;
+    assert_eq!(outcome, client::NearbyOutcome::Declined);
+    assert!(!path.exists());
+    assert!(storage::load::<HostConfig>(&f.config)?.devices.is_empty());
+    Ok(())
+}
+
+#[tokio::test]
+async fn nearby_pairing_is_refused_over_the_relay_and_when_closed() -> Result<()> {
+    let f = Fixture::new(true).await?;
+    let (_, decision) = tokio::sync::watch::channel(None);
+    let path = f.root.join("relay.json");
+    assert!(client::pair_nearby(
+        &path,
+        "test.app",
+        f.route.clone(),
+        "Phone",
+        "iPhone",
+        |_| {},
+        decision
+    )
+    .await
+    .is_err());
+    assert!(!path.exists());
+    let f = Fixture::new(false).await?;
+    f.host.owner_nearby_allow("test.app", false)?;
+    let (_, decision) = tokio::sync::watch::channel(None);
+    let path = f.root.join("closed.json");
+    assert!(client::pair_nearby(
+        &path,
+        "test.app",
+        f.route.clone(),
+        "Phone",
+        "iPhone",
+        |_| {},
+        decision
+    )
+    .await
+    .is_err());
+    assert!(storage::load::<HostConfig>(&f.config)?.devices.is_empty());
+    Ok(())
+}
+
+#[tokio::test]
+async fn noise_terminating_mitm_cannot_forward_a_nearby_commitment() -> Result<()> {
+    let mut f = Fixture::new(false).await?;
+    let upstream = f.route.clone();
+    let listener = TcpListener::bind("127.0.0.1:0").await?;
+    let address = listener.local_addr()?;
+    f.tasks.push(tokio::spawn(async move {
+        let result: Result<()> = async {
+            let (socket, _) = listener.accept().await?;
+            let identity = tether_core::Identity::generate()?;
+            let mut downstream = tether::protocol::respond(
+                tether::carrier::Carrier::Direct(socket),
+                &identity,
+                "test.app",
+            )
+            .await?;
+            let mut host = tether::protocol::initiate(
+                upstream.connect("test.app").await?,
+                &identity,
+                "test.app",
+                None,
+            )
+            .await?;
+            loop {
+                host.send(downstream.receive().await?).await?;
+                downstream.send(host.receive().await?).await?;
+            }
+        }
+        .await;
+        let _ = result;
+    }));
+    let (_, decision) = tokio::sync::watch::channel(Some(true));
+    let path = f.root.join("mitm.json");
+    assert!(client::pair_nearby(
+        &path,
+        "test.app",
+        Route::Direct(address),
+        "Phone",
+        "iPhone",
+        |_| {},
+        decision
+    )
+    .await
+    .is_err());
+    assert!(!path.exists());
+    assert!(f.host.owner_nearby("test.app")?["requests"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+    assert!(storage::load::<HostConfig>(&f.config)?.devices.is_empty());
+    Ok(())
+}
+
+#[tokio::test]
+async fn abandoned_nearby_exchanges_close_pairing_before_a_code_can_be_ground() -> Result<()> {
+    let f = Fixture::new(false).await?;
+    // A device in the middle starts exchanges and abandons each once it sees the host's nonce,
+    // hoping for one whose code matches the phone it is deceiving. Each costs it visibly.
+    for _ in 0..tether::nearby::UNFINISHED {
+        let identity = tether_core::Identity::generate()?;
+        let mut session = tether::protocol::initiate(
+            f.route.connect("test.app").await?,
+            &identity,
+            "test.app",
+            None,
+        )
+        .await?;
+        let (_, commitment) = tether_core::SasClient::start(
+            "test.app",
+            session.binding,
+            identity.public(),
+            session.peer,
+        )?;
+        session
+            .send(serde_json::json!({"type":"pair.nearby","v":1,"commit":STANDARD.encode(commitment),"name":"x","kind":"x"}))
+            .await?;
+        let nonce = session.receive().await?;
+        assert_eq!(nonce["type"], "pair.nearby.nonce");
+        drop(session);
+        sleep(Duration::from_millis(50)).await;
+    }
+    let listing = f.host.owner_nearby("test.app")?;
+    assert_eq!(listing["allow"], false);
+    assert_eq!(listing["closed"], "unfinished");
+    assert!(listing["requests"].as_array().unwrap().is_empty());
+    let (_, decision) = tokio::sync::watch::channel(None);
+    let path = f.root.join("after.json");
+    assert!(client::pair_nearby(
+        &path,
+        "test.app",
+        f.route.clone(),
+        "Phone",
+        "iPhone",
+        |_| {},
+        decision
+    )
+    .await
+    .is_err());
+    f.host.owner_nearby_allow("test.app", true)?;
+    let (outcome, _, _, _) = nearby(&f, f.route.clone(), "Phone", Some(true), true).await?;
+    assert_eq!(outcome, client::NearbyOutcome::Paired);
     Ok(())
 }

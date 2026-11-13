@@ -18,6 +18,8 @@ pub struct HostStatus {
 pub struct OwnerInspection {
     pub app_id: String,
     pub host_id: String,
+    /// The host's public Noise key. Announced so nearby devices can tell an already-paired host.
+    pub host_key: String,
     pub services: Vec<ServiceSummary>,
 }
 

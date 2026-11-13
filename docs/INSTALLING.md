@@ -4,7 +4,7 @@ Use the components you need. Transport libraries do not require the UI libraries
 
 ## Apple
 
-Add `https://github.com/fledgeling-co/tether.git` in Xcode's package dependencies and select `TetherKit` and optionally `TetherUI`. The root package downloads the checksummed native XCFramework from the matching GitHub release. The supported deployment targets are macOS 15 and iOS 18. The prebuilt bridge covers universal macOS, arm64 iOS devices and arm64 simulators.
+Add `https://github.com/fledgeling-co/tether.git` in Xcode's package dependencies and select `TetherKit` and optionally `TetherUI`. The root package downloads the checksummed native XCFramework from the matching GitHub release. The supported deployment targets are macOS 14 and iOS 17. The prebuilt bridge covers universal macOS, arm64 iOS devices and arm64 simulators.
 
 For a source build, install Rust 1.89 and the Apple targets, then build the bridge:
 
@@ -47,6 +47,17 @@ Use the .NET 10 SDK, Rust's MSVC toolchain and Visual Studio C++ build tools. Bu
 ```
 
 The output directory must be new. Add the generated Core and WinUI NuGets as a local package source, or download them from GitHub Releases. The Core package supplies its native library and owner helper and targets .NET 8. The WinUI package and sample require .NET 10. Only x64 native artifacts are currently supplied. [Windows integration](WINDOWS.md).
+
+## Web
+
+Install the `wasm32-unknown-unknown` Rust target and TypeScript, then build the browser core and package:
+
+```sh
+rustup target add wasm32-unknown-unknown
+bash packages/web/scripts/build.sh
+```
+
+`packages/web/dist/` holds the ES modules and `tether.wasm`; serve the `.wasm` file as `application/wasm` beside them. Browsers pair only through a `wss://` relay. [Web kit](../packages/web/README.md).
 
 ## Shared Rust and relay
 

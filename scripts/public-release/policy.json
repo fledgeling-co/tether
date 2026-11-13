@@ -30,7 +30,8 @@
     "licenses",
     "scripts",
     ".github",
-    "docs/assets"
+    "docs/assets",
+    "packages/web"
   ],
   "documentation": [
     "docs/ADAPTING.md",
@@ -45,7 +46,9 @@
     "docs/protocol-v1.json",
     "docs/INSTALLING.md",
     "docs/NATIVE_UI.md",
-    "docs/VALIDATION.md"
+    "docs/VALIDATION.md",
+    "docs/MCP.md",
+    "docs/how-tether-works.html"
   ],
   "required": [
     "README.md",
@@ -131,7 +134,26 @@
     "tests/fixtures/media/video.h264": "d8edd431124b9dc61f84fd064f682df6a0b7d8cc43d148d4a4c9d125f31b0a55"
   },
   "extraFiles": [
-    "tests/fixtures/media/manifest.json"
+    "tests/fixtures/media/manifest.json",
+    "packages/mcp/package.json",
+    "packages/mcp/package-lock.json",
+    "packages/mcp/tsconfig.json",
+    "packages/mcp/.gitignore",
+    "packages/mcp/README.md",
+    "packages/mcp/src/node.ts",
+    "packages/mcp/src/forward.ts",
+    "packages/mcp/src/types.ts",
+    "packages/mcp/src/policy.ts",
+    "packages/mcp/src/access.ts",
+    "packages/mcp/src/index.ts",
+    "packages/mcp/src/pageindex.ts",
+    "packages/mcp/src/gateway.ts",
+    "packages/mcp/src/auth.ts",
+    "packages/mcp/test/fixture.mjs",
+    "packages/mcp/test/tether.integration.mjs",
+    "packages/mcp/test/access.test.mjs",
+    "packages/mcp/examples/host.mjs",
+    "packages/mcp/src/cli.ts"
   ],
   "credentialFixtureExemptions": [
     {

@@ -6,6 +6,7 @@ publish = false
 
 [dependencies]
 tether-core = { path = "../core" }
+tether-model = { path = "../model" }
 tether-media = { path = "../media" }
 tokio = { version = "=1.54.1", features = ["full"] }
 tokio-tungstenite = { version = "=0.26.2", features = ["rustls-tls-webpki-roots"] }

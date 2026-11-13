@@ -13,16 +13,27 @@
         public let kind: TetherServiceKind
         public let loopbackAddress: String
         public let port: UInt16
-        public init(id: String, kind: TetherServiceKind, loopbackAddress: String = "127.0.0.1", port: UInt16) throws {
+        /// A private file holding a 32-byte key the service also holds. When set, the host proves
+        /// the connecting device to the service before forwarding: the service sends a challenge
+        /// and the host answers with the device's public key and an HMAC under this key. TCP only.
+        public let identityKeyFile: URL?
+        public init(id: String, kind: TetherServiceKind, loopbackAddress: String = "127.0.0.1", port: UInt16,
+                    identityKeyFile: URL? = nil) throws {
             try Bridge.validateScope(id)
-            guard port > 0, ["127.0.0.1", "::1"].contains(loopbackAddress) else {
+            guard port > 0, ["127.0.0.1", "::1"].contains(loopbackAddress),
+                  identityKeyFile == nil || (kind == .tcp && identityKeyFile?.isFileURL == true) else {
                 throw TetherHostControllerError.invalidProfile
             }
             self.id = id; self.kind = kind; self.loopbackAddress = loopbackAddress; self.port = port
+            self.identityKeyFile = identityKeyFile
         }
 
         var argument: String {
             "\(id)=\(kind.rawValue)://\(loopbackAddress == "::1" ? "[::1]" : loopbackAddress):\(port)"
+        }
+
+        var identityArguments: [String] {
+            identityKeyFile.map { ["--identify", "\(id)=\($0.path)"] } ?? []
         }
     }
 
@@ -80,22 +91,24 @@
         }
 
         public let device: String
+        /// The label the device gave when it paired nearby; nil for devices paired with a code.
+        public let name: String?
         public let services: [String]
         /// Current authenticated channels, including control channels, observed by the running helper.
         public let activeSessions: Int?
         public let recentlySeen: Bool?
         public let lastSeenUnixMilliseconds: UInt64?
         enum CodingKeys: String, CodingKey {
-            case device, services
+            case device, name, services
             case activeSessions = "active_sessions"
             case recentlySeen = "recently_seen"
             case lastSeenUnixMilliseconds = "last_seen_unix_ms"
         }
 
-        public init(device: String, services: [String], activeSessions: Int? = nil, recentlySeen: Bool? = nil,
+        public init(device: String, name: String? = nil, services: [String], activeSessions: Int? = nil, recentlySeen: Bool? = nil,
                     lastSeenUnixMilliseconds: UInt64? = nil)
         {
-            self.device = device; self.services = services; self.activeSessions = activeSessions
+            self.device = device; self.name = name; self.services = services; self.activeSessions = activeSessions
             self.recentlySeen = recentlySeen; self.lastSeenUnixMilliseconds = lastSeenUnixMilliseconds
         }
     }
@@ -103,6 +116,7 @@
     struct HostDescription: Decodable, Sendable {
         let app_id: String
         let host_id: String
+        let host_key: String?
         let services: [TetherHostService]
     }
 
@@ -116,7 +130,30 @@
         func execute(_ arguments: [String]) async throws -> Data
         func start(_ arguments: [String]) async throws -> AsyncThrowingStream<HostEvent, Error>
         func request(command: String, expectedApp: String, clientID: String?) async throws -> Data
+        func request(command: String, expectedApp: String, fields: [String: any Sendable]) async throws -> Data
         func stop() async -> Bool
+        func processIdentifier() async -> Int32?
+    }
+
+    extension HostHelper {
+        func processIdentifier() async -> Int32? { nil }
+
+        /// Owner commands that carry extra fields; helpers without them refuse.
+        func request(command: String, expectedApp: String, fields: [String: any Sendable]) async throws -> Data {
+            guard fields.isEmpty else { throw TetherHostControllerError.helperFailed }
+            return try await request(command: command, expectedApp: expectedApp, clientID: nil)
+        }
+    }
+
+    /// A device waiting for this host's owner to compare its code and approve or decline.
+    public struct TetherNearbyRequest: Identifiable, Equatable, Sendable {
+        public let id: UInt64
+        public let name: String
+        public let kind: String
+        public let code: TetherNearbyCode
+        public let expiresAt: Date
+        /// The device's owner has already approved the same code.
+        public let deviceApproved: Bool
     }
 
     /// Owns the helper's stdin and lifetime. It reads only safe helper output, never the private
@@ -128,9 +165,21 @@
         public private(set) var clients: [TetherHostClient] = []
         public private(set) var services: [TetherHostService] = []
         public private(set) var hostID: String?
+        /// This host's public key, announced so nearby devices can show it as already paired.
+        public private(set) var hostKey: Data?
         public private(set) var pairingCode: String?
         public private(set) var pairingExpiresAt: Date?
         public private(set) var pairingAttemptsRemaining: Int?
+        /// Requests from nearby devices, newest last. Each shows the code both screens display.
+        public private(set) var nearbyRequests: [TetherNearbyRequest] = []
+        /// Whether nearby devices may ask to pair. Requests always need the owner's approval.
+        public private(set) var allowsNearby = true
+        /// Set when the host closed nearby pairing itself after unfinished requests, which is what
+        /// a device in the middle trying for a matching code looks like.
+        public private(set) var nearbyClosedForSafety = false
+        @ObservationIgnored private var nearbyWatch: Task<Void, Never>?
+        @ObservationIgnored private var announcement: TetherNearbyAnnouncement?
+        @ObservationIgnored private var nearbyPort: UInt16?
         @ObservationIgnored private var ownerActive = false
         @ObservationIgnored private let config: URL
         @ObservationIgnored private let helper: any HostHelper
@@ -158,7 +207,7 @@
             self.helper = helper; config = configurationURL; self.appID = appID
         }
 
-        deinit { launch?.cancel(); observer?.cancel(); presence?.cancel(); expiry?.cancel() }
+        deinit { launch?.cancel(); observer?.cancel(); presence?.cancel(); expiry?.cancel(); nearbyWatch?.cancel(); announcement?.stop() }
 
         public func initialize(services profiles: [TetherHostServiceProfile]) async throws {
             try begin(); defer { busy = false }
@@ -166,6 +215,7 @@
                   Set(profiles.map(\.id)).count == profiles.count else { throw TetherHostControllerError.invalidProfile }
             let arguments = ["host", "init", "--config", config.path, "--app", appID]
                 + profiles.flatMap { ["--service", $0.argument] }
+                + profiles.flatMap(\.identityArguments)
             _ = try await helper.execute(arguments)
             try await inspect()
         }
@@ -189,6 +239,8 @@
                 guard generation == token else { throw CancellationError() }
                 ownerActive = true
                 startPresenceObservation(token: token)
+                if case let .privateNetwork(_, port) = route { nearbyPort = port }
+                startNearbyObservation(token: token)
                 observer = Task { [weak self] in
                     do {
                         for try await event in events {
@@ -218,6 +270,7 @@
         public func stop() async {
             generation = UUID(); launch?.cancel(); launch = nil; observer?.cancel(); observer = nil
             clearCode(); clearPresence(); presence?.cancel(); presence = nil; ownerActive = false
+            stopNearby()
             let exited = await helper.stop()
             state = exited ? .stopped : .failed
         }
@@ -277,6 +330,80 @@
             pairingAttemptsRemaining = status.attempts_remaining
         }
 
+        /// Announces this host to nearby devices on its private-network port. The name is what
+        /// phones list, so use the computer's own name.
+        public func announceNearby(name: String, kind: String = "Mac") throws {
+            guard let nearbyPort, ownerActive else { throw TetherHostControllerError.helperFailed }
+            announcement?.stop()
+            announcement = try TetherNearbyAnnouncement(appID: appID, name: name, kind: kind, port: nearbyPort, hostKey: hostKey)
+        }
+
+        /// Invites a device from the nearby list. It connects back and both screens show the code.
+        public func invite(_ peer: TetherNearbyPeer, hostName: String) async throws {
+            guard let nearbyPort, ownerActive, allowsNearby else { throw TetherHostControllerError.helperFailed }
+            try await TetherNearbyInviteListener.invite(peer, appID: appID, hostName: hostName, port: nearbyPort)
+        }
+
+        public func decideNearby(_ request: TetherNearbyRequest, approve: Bool) async throws {
+            guard ownerActive else { throw TetherHostControllerError.helperFailed }
+            _ = try await helper.request(command: "nearby-decide", expectedApp: appID,
+                                         fields: ["nearby_id": request.id, "approve": approve])
+            nearbyRequests.removeAll { $0.id == request.id }
+            if approve, !request.deviceApproved { try? await refreshNearby() }
+        }
+
+        public func setAllowsNearby(_ allow: Bool) async throws {
+            guard ownerActive else { throw TetherHostControllerError.helperFailed }
+            _ = try await helper.request(command: "nearby-allow", expectedApp: appID, fields: ["approve": allow])
+            allowsNearby = allow
+            if allow { nearbyClosedForSafety = false } else { nearbyRequests = [] }
+        }
+
+        private func startNearbyObservation(token: UUID) {
+            nearbyWatch?.cancel()
+            nearbyWatch = Task { [weak self] in
+                while !Task.isCancelled {
+                    guard let self, self.generation == token, self.ownerActive else { return }
+                    try? await self.refreshNearby()
+                    try? await Task.sleep(for: .seconds(1))
+                }
+            }
+        }
+
+        private func refreshNearby() async throws {
+            let output = try await helper.request(command: "nearby", expectedApp: appID, fields: [:])
+            struct Listing: Decodable {
+                struct Item: Decodable {
+                    let id: UInt64; let name: String; let kind: String; let code: String
+                    let expires_in_seconds: Int; let client_approved: Bool; let decision: Bool?
+                }
+                let allow: Bool; let closed: String?; let requests: [Item]
+            }
+            let listing = try JSONDecoder().decode(Listing.self, from: output)
+            allowsNearby = listing.allow
+            nearbyClosedForSafety = listing.closed != nil
+            nearbyRequests = listing.requests.prefix(4).compactMap { item in
+                guard item.decision == nil, let code = TetherNearbyCode(digits: item.code),
+                      (0 ... 60).contains(item.expires_in_seconds) else { return nil }
+                return TetherNearbyRequest(id: item.id, name: String(item.name.prefix(48)), kind: String(item.kind.prefix(48)),
+                                           code: code, expiresAt: Date().addingTimeInterval(Double(item.expires_in_seconds)),
+                                           deviceApproved: item.client_approved)
+            }
+        }
+
+        private func stopNearby() {
+            nearbyWatch?.cancel(); nearbyWatch = nil
+            announcement?.stop(); announcement = nil
+            nearbyRequests = []; nearbyPort = nil
+        }
+
+        /// The running host process. Its services reach the app's loopback targets from this
+        /// process, so an app can refuse loopback connections that come from anywhere else.
+        public func hostProcessIdentifier() async -> Int32? {
+            guard ownerActive else { return nil }
+            return await helper.processIdentifier()
+        }
+
         public func refreshClients() async throws {
             try begin(); defer { busy = false }
             try await inspect()
@@ -308,6 +435,7 @@
                 try Bridge.validateScope(service.id)
             }
             services = value.services; hostID = value.host_id
+            hostKey = value.host_key.flatMap { Data(base64Encoded: $0) }.flatMap { $0.count == 32 ? $0 : nil }
         }
 
         private func loadClients() async throws {

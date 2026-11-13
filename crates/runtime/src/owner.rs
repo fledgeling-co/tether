@@ -14,6 +14,10 @@ pub struct Request {
     pub command: String,
     pub expected_app: String,
     pub client_id: Option<String>,
+    #[serde(default)]
+    pub nearby_id: Option<u64>,
+    #[serde(default)]
+    pub approve: Option<bool>,
 }
 pub fn parse(bytes: &[u8]) -> Result<Request> {
     if bytes.len() > MAX_REQUEST {
@@ -36,8 +40,18 @@ pub fn parse(bytes: &[u8]) -> Result<Request> {
     crate::storage::app_id(&request.expected_app)?;
     if !matches!(
         request.command.as_str(),
-        "inspect" | "clients" | "revoke" | "pair-code" | "pairing-status"
+        "inspect"
+            | "clients"
+            | "revoke"
+            | "pair-code"
+            | "pairing-status"
+            | "nearby"
+            | "nearby-decide"
+            | "nearby-allow"
     ) || (request.command == "revoke") != request.client_id.is_some()
+        || (request.command == "nearby-decide") != request.nearby_id.is_some()
+        || matches!(request.command.as_str(), "nearby-decide" | "nearby-allow")
+            != request.approve.is_some()
     {
         return Err("invalid owner command".into());
     }
@@ -68,6 +82,9 @@ pub async fn dispatch(host: Host, request: Request) -> Value {
             "revoke"=>{host.owner_revoke(&request.expected_app,request.client_id.as_deref().ok_or("missing client")?)?;Ok(json!({}))},
             "pair-code"=>{let code=host.open_pairing()?;let status=host.pairing_status()?;Ok(json!({"code":code,"expires_in_seconds":status.expires_in_seconds,"attempts_remaining":status.attempts_remaining}))},
             "pairing-status"=>Ok(serde_json::to_value(host.pairing_status()?)?),
+            "nearby"=>host.owner_nearby(&request.expected_app),
+            "nearby-decide"=>{host.owner_nearby_decide(&request.expected_app,request.nearby_id.ok_or("missing request")?,request.approve.ok_or("missing decision")?)?;Ok(json!({}))},
+            "nearby-allow"=>{host.owner_nearby_allow(&request.expected_app,request.approve.ok_or("missing decision")?)?;Ok(json!({}))},
             _=>Err("invalid owner command".into())
         }
     }).await;

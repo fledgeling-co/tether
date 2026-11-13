@@ -141,3 +141,50 @@ public actor TetherConfirmation {
         Bridge.destroy(handle); handle = nil
     }
 }
+
+/// The client half of nearby pairing: a commitment first, then the reveal and the code to show.
+public actor TetherNearbyExchange {
+    private var handle: UInt64?
+    public nonisolated let commitment: Data
+    public init(appID: String, binding: Data, clientKey: Data, hostKey: Data) throws {
+        let response = try Bridge.call([
+            "command": "sas.start", "app": appID, "binding": binding.base64EncodedString(),
+            "clientKey": clientKey.base64EncodedString(), "hostKey": hostKey.base64EncodedString(),
+        ])
+        let id = try Bridge.handle(response)
+        do { commitment = try Bridge.data(response, count: 32) }
+        catch { Bridge.destroy(id); throw error }
+        handle = id
+    }
+
+    deinit { Bridge.destroy(handle) }
+    public func finish(hostNonce: Data) throws -> (reveal: Data, code: TetherNearbyCode) {
+        guard let handle else { throw TetherError.closed }
+        self.handle = nil
+        let response = try Bridge.call(["command": "sas.finish", "handle": handle, "data": hostNonce.base64EncodedString()])
+        guard let digits = response["code"] as? String, let code = TetherNearbyCode(digits: digits) else {
+            throw TetherError.invalidResponse
+        }
+        return (try Bridge.data(response, count: 32), code)
+    }
+}
+
+/// Six digits both devices show. Compare the whole code; display it as two groups of three.
+public struct TetherNearbyCode: Equatable, Hashable, Sendable {
+    public let digits: String
+    public init?(digits: String) {
+        guard digits.count == 6, digits.utf8.allSatisfy({ (48 ... 57).contains($0) }) else { return nil }
+        self.digits = digits
+    }
+
+    public var grouped: String { "\(digits.prefix(3)) \(digits.suffix(3))" }
+    /// Read digit by digit, in two groups, so VoiceOver doesn't announce a single large number.
+    public var spoken: String { digits.prefix(3).map(String.init).joined(separator: " ") + ", " + digits.suffix(3).map(String.init).joined(separator: " ") }
+}
+
+/// How a nearby pairing ended. Declined and expired save nothing on either device.
+public enum TetherNearbyOutcome: Equatable, Sendable {
+    case paired(TetherPeerRecord)
+    case declined
+    case expired
+}
