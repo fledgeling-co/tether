@@ -71,7 +71,7 @@ public protocol TetherClientManaging: Sendable {
     func discardPendingPairing(_ record: TetherPeerRecord) async throws
     func openService(_ name: String, kind: TetherServiceKind, peer: TetherPeerRecord) async throws -> TetherServiceStream
     func openMedia(_ name: String, peer: TetherPeerRecord) async throws -> TetherMediaSession
-    func pairNearby(route: TetherRoute, deviceName: String, deviceKind: String,
+    func pairNearby(route: TetherRoute, deviceName: String, deviceKind: String, inviteToken: String?,
                     onCode: @escaping @Sendable (TetherNearbyCode) async -> Void,
                     onHostApproved: @escaping @Sendable () async -> Void,
                     onStoring: @escaping @Sendable () async -> Void,
@@ -79,7 +79,7 @@ public protocol TetherClientManaging: Sendable {
 }
 
 public extension TetherClientManaging {
-    func pairNearby(route _: TetherRoute, deviceName _: String, deviceKind _: String,
+    func pairNearby(route _: TetherRoute, deviceName _: String, deviceKind _: String, inviteToken _: String?,
                     onCode _: @escaping @Sendable (TetherNearbyCode) async -> Void,
                     onHostApproved _: @escaping @Sendable () async -> Void,
                     onStoring _: @escaping @Sendable () async -> Void,
@@ -403,6 +403,7 @@ public final class TetherConnectionStore {
 
     /// Pairs with a nearby computer by comparing a code, then selects and connects it.
     public func pairNearby(route: TetherRoute, deviceName: String, deviceKind: String,
+                           inviteToken: String? = nil,
                            onCode: @escaping @Sendable (TetherNearbyCode) async -> Void,
                            onHostApproved: @escaping @Sendable () async -> Void,
                            onStoring: @escaping @Sendable () async -> Void = {},
@@ -410,6 +411,7 @@ public final class TetherConnectionStore {
     {
         do {
             let outcome = try await client.pairNearby(route: route, deviceName: deviceName, deviceKind: deviceKind,
+                                                      inviteToken: inviteToken,
                                                       onCode: onCode, onHostApproved: onHostApproved, onStoring: onStoring,
                                                       decision: decision)
             guard case let .paired(record) = outcome else { return outcome == .declined ? .declined : .expired }

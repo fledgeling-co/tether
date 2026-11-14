@@ -1,9 +1,56 @@
 //! The DNS-SD records nearby pairing announces and reads. Each platform browses with its own
 //! system API; what goes in a record and what a record means is decided here.
+//!
+//! An invite is authenticated by a one-time token the *device* mints. A device's invite listener
+//! writes [`challenge`] as its first line the moment a connection opens; the inviting host reads
+//! it with [`read_challenge`] and must echo that token in its [`invite`]. The device checks the
+//! echo with [`read_invite`] and spends the token, and then repeats it in `pair.nearby`, so the
+//! host can tell the device it invited from any other device that happens to connect.
+//!
+//! What that establishes: an invite now has to come from a party that opened a connection to this
+//! device's own listener and read a 32-byte secret off it, and each token admits one invite. What
+//! it does not establish: the inviting computer's identity. Anything on the local network can
+//! still open that connection, so the code comparison remains the only thing that decides trust.
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
+use rand_core::{OsRng, RngCore};
 use serde_json::{json, Map, Value};
 
 pub const HOST_SERVICE: &str = "_tether._tcp";
 pub const DEVICE_SERVICE: &str = "_tether-dev._tcp";
+
+/// Bytes of randomness in a one-time invite token.
+pub const INVITE_TOKEN_BYTES: usize = 32;
+/// Its length once base64url-encoded without padding.
+pub const INVITE_TOKEN_LENGTH: usize = 43;
+/// The longest line either side of the invite exchange will read.
+pub const MAX_INVITE_LINE: usize = 512;
+
+/// A fresh one-time invite token. A device mints one per connection to its invite listener.
+pub fn invite_token() -> String {
+    let mut bytes = [0u8; INVITE_TOKEN_BYTES];
+    OsRng.fill_bytes(&mut bytes);
+    URL_SAFE_NO_PAD.encode(bytes)
+}
+
+/// Whether a token has the one shape every kit writes.
+pub fn token_shape(text: &str) -> bool {
+    text.len() == INVITE_TOKEN_LENGTH
+        && text
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+}
+
+/// Compares two tokens without leaking how far they matched. Anything misshapen is not a token.
+pub fn same_token(left: &str, right: &str) -> bool {
+    if !token_shape(left) || !token_shape(right) {
+        return false;
+    }
+    let mut difference = 0u8;
+    for (a, b) in left.bytes().zip(right.bytes()) {
+        difference |= a ^ b;
+    }
+    difference == 0
+}
 
 /// TXT entries for an announcement. Addresses and the key are hints for speed and for marking
 /// paired hosts; the code comparison decides trust.
@@ -82,17 +129,56 @@ pub fn peer(
     }))
 }
 
-/// A host's invitation to a device, and its parse on the device: one JSON line.
-pub fn invite(app_id: &str, host_name: &str, port: u16) -> Value {
-    json!({"v": 1, "app": app_id, "port": port, "name": crate::view::label(host_name, "Computer")})
+/// The first line a device's invite listener writes: the one-time token for this connection.
+pub fn challenge(app_id: &str, token: &str) -> Result<Value, &'static str> {
+    if !token_shape(token) {
+        return Err("invalid_token");
+    }
+    Ok(json!({"v": 1, "app": app_id, "tok": token}))
 }
 
-pub fn read_invite(app_id: &str, line: &str, remote: &str) -> Option<Value> {
-    let value: Value = serde_json::from_str(line.lines().next()?).ok()?;
+/// Reads a challenge line on the inviting host, returning the token the invite must echo.
+pub fn read_challenge(app_id: &str, line: &str) -> Option<String> {
+    let value: Value = serde_json::from_str(first_line(line)?).ok()?;
+    let token = value["tok"].as_str().filter(|t| token_shape(t))?;
+    (value["v"] == 1 && value["app"].as_str() == Some(app_id)).then(|| token.to_owned())
+}
+
+/// A host's invitation to a device, echoing the token that device just issued: one JSON line.
+pub fn invite(
+    app_id: &str,
+    host_name: &str,
+    port: u16,
+    token: &str,
+) -> Result<Value, &'static str> {
+    if !token_shape(token) {
+        return Err("invalid_token");
+    }
+    Ok(
+        json!({"v": 1, "app": app_id, "port": port, "name": crate::view::label(host_name, "Computer"), "tok": token}),
+    )
+}
+
+/// The device's read of an invite. `issued` is the token this listener minted for this
+/// connection; an invite that does not echo it is not one this device asked for.
+pub fn read_invite(app_id: &str, line: &str, remote: &str, issued: &str) -> Option<Value> {
+    let value: Value = serde_json::from_str(first_line(line)?).ok()?;
     let port = value["port"].as_u64().filter(|p| (1..=65535).contains(p))?;
-    (value["v"] == 1 && value["app"].as_str() == Some(app_id) && remote.parse::<std::net::IpAddr>().is_ok()).then(|| {
-        json!({"host": remote, "port": port, "name": crate::view::label(value["name"].as_str().unwrap_or(""), "Computer")})
+    let echoed = value["tok"].as_str().unwrap_or("");
+    (value["v"] == 1
+        && value["app"].as_str() == Some(app_id)
+        && same_token(echoed, issued)
+        && remote.parse::<std::net::IpAddr>().is_ok())
+    .then(|| {
+        json!({"host": remote, "port": port, "name": crate::view::label(value["name"].as_str().unwrap_or(""), "Computer"), "token": issued})
     })
+}
+
+/// The first line of a bounded read. Anything longer than a line either side will write is not
+/// one of ours, so it is refused rather than truncated into something that parses.
+fn first_line(text: &str) -> Option<&str> {
+    let line = text.lines().next()?;
+    (line.len() <= MAX_INVITE_LINE).then_some(line)
 }
 
 #[cfg(test)]
@@ -137,18 +223,105 @@ mod tests {
 
     #[test]
     fn invites_are_scoped_to_the_app_and_need_a_real_port() {
-        let line = invite("test.app", "Studio Mac", 15912).to_string();
+        let token = invite_token();
+        let line = invite("test.app", "Studio Mac", 15912, &token)
+            .unwrap()
+            .to_string();
         assert_eq!(
-            read_invite("test.app", &line, "192.168.1.5").unwrap()["port"],
+            read_invite("test.app", &line, "192.168.1.5", &token).unwrap()["port"],
             15912
         );
-        assert!(read_invite("other.app", &line, "192.168.1.5").is_none());
+        assert!(read_invite("other.app", &line, "192.168.1.5", &token).is_none());
         assert!(read_invite(
             "test.app",
-            r#"{"v":1,"app":"test.app","port":0}"#,
-            "192.168.1.5"
+            &json!({"v":1,"app":"test.app","port":0,"tok":token}).to_string(),
+            "192.168.1.5",
+            &token
         )
         .is_none());
-        assert!(read_invite("test.app", &line, "not an address").is_none());
+        assert!(read_invite("test.app", &line, "not an address", &token).is_none());
+    }
+
+    #[test]
+    fn an_invite_is_refused_unless_it_echoes_the_token_this_device_issued() {
+        let issued = invite_token();
+        let other = invite_token();
+        assert_ne!(issued, other);
+        let honest = invite("test.app", "Studio Mac", 15912, &issued)
+            .unwrap()
+            .to_string();
+        let read = read_invite("test.app", &honest, "192.168.1.5", &issued).unwrap();
+        assert_eq!(read["token"], issued, "the device echoes it in pair.nearby");
+
+        // The defect this closes: a line anybody on the network could compose.
+        let unauthenticated = json!({"v":1,"app":"test.app","port":15912,"name":"Studio Mac"});
+        assert!(
+            read_invite(
+                "test.app",
+                &unauthenticated.to_string(),
+                "192.168.1.5",
+                &issued
+            )
+            .is_none(),
+            "an invite with no token is not one this device asked for"
+        );
+        // Somebody else's live token, and a guess of the right shape, are both refused.
+        let foreign = invite("test.app", "Studio Mac", 15912, &other)
+            .unwrap()
+            .to_string();
+        assert!(read_invite("test.app", &foreign, "192.168.1.5", &issued).is_none());
+        let guess =
+            json!({"v":1,"app":"test.app","port":15912,"tok":"A".repeat(INVITE_TOKEN_LENGTH)});
+        assert!(read_invite("test.app", &guess.to_string(), "192.168.1.5", &issued).is_none());
+        // The same invite read against a spent token: the listener mints one per connection,
+        // so a replay has no issued token left to match.
+        assert!(read_invite("test.app", &honest, "192.168.1.5", &invite_token()).is_none());
+        // A misshapen issued token can never admit anything, so a caller cannot opt out.
+        assert!(read_invite("test.app", &honest, "192.168.1.5", "").is_none());
+        assert!(invite("test.app", "Studio Mac", 15912, "short").is_err());
+    }
+
+    #[test]
+    fn a_challenge_carries_one_token_and_is_read_only_for_this_app() {
+        let token = invite_token();
+        assert!(token_shape(&token));
+        assert_eq!(token.len(), INVITE_TOKEN_LENGTH);
+        let line = challenge("test.app", &token).unwrap().to_string();
+        assert_eq!(read_challenge("test.app", &line), Some(token.clone()));
+        assert_eq!(read_challenge("other.app", &line), None);
+        assert_eq!(
+            read_challenge(
+                "test.app",
+                &json!({"v":2,"app":"test.app","tok":token}).to_string()
+            ),
+            None
+        );
+        assert_eq!(
+            read_challenge("test.app", &json!({"v":1,"app":"test.app"}).to_string()),
+            None
+        );
+        assert!(challenge("test.app", "nope").is_err());
+        // Two mints never collide, and a line longer than either side writes is refused.
+        assert_ne!(invite_token(), invite_token());
+        assert_eq!(
+            read_challenge("test.app", &" ".repeat(MAX_INVITE_LINE + 1)),
+            None
+        );
+    }
+
+    #[test]
+    fn tokens_compare_whole_and_refuse_anything_misshapen() {
+        let token = invite_token();
+        assert!(same_token(&token, &token.clone()));
+        assert!(!same_token(&token, &invite_token()));
+        let mut altered = token.clone().into_bytes();
+        altered[INVITE_TOKEN_LENGTH - 1] ^= 1;
+        let altered = String::from_utf8(altered).unwrap();
+        assert!(
+            !same_token(&token, &altered),
+            "a token differing only in its last character"
+        );
+        assert!(!same_token("", ""));
+        assert!(!token_shape(&format!("{}+", &token[1..])));
     }
 }

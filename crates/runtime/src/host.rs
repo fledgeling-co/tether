@@ -663,6 +663,13 @@ impl Host {
             STANDARD.decode(request["commit"].as_str().ok_or("missing commitment")?)?;
         let name = nearby::label(request["name"].as_str().unwrap_or(""), "Device");
         let kind = nearby::label(request["kind"].as_str().unwrap_or(""), "Device");
+        // The one-time token a device echoes when a computer invited it. Only its shape is
+        // checked here; whether it is the token this host's own invite carried is the owner
+        // screen's comparison, and anything misshapen is carried as no token at all.
+        let invite_token = request["tok"]
+            .as_str()
+            .filter(|token| tether_model::discovery::token_shape(token))
+            .map(str::to_owned);
         let (exchange, nonce) = SasHost::start(
             &self.0.app,
             session.binding,
@@ -694,9 +701,14 @@ impl Host {
                 return Err(error);
             }
         };
-        let admission =
-            self.nearby_state()?
-                .admit(session.peer, name.clone(), kind, code, Instant::now());
+        let admission = self.nearby_state()?.admit(
+            session.peer,
+            name.clone(),
+            kind,
+            invite_token,
+            code,
+            Instant::now(),
+        );
         let id = match admission {
             nearby::Admission::Admitted(id) => id,
             nearby::Admission::Paused => return session.send(refuse("paused")).await,

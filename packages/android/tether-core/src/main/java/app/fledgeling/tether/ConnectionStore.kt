@@ -34,8 +34,8 @@ class TetherConnectionStore(private val client:TetherClientManaging):Closeable {
     private suspend fun <T> exclusive(id:String,block:suspend()->T):T=operations.run(id,block)
     suspend fun pair(route:TetherRoute,code:String):PeerRecord { try { val peer=client.pair(route,code); load(); selectHost(peer.id); scope.launch { runCatching { reconnect(peer.id) } }; return peer } catch(e:Exception) { withContext(NonCancellable) { runCatching { load() } }; throw e } }
     /** Pairs with a nearby computer by comparing a code, then selects and connects it. */
-    suspend fun pairNearby(route:TetherRoute,deviceName:String,deviceKind:String,onCode:suspend(String)->Unit,onHostApproved:suspend()->Unit,decision:()->Boolean?,onStoring:suspend()->Unit={}):NearbyOutcome {
-        try { val outcome=client.pairNearby(route,deviceName,deviceKind,onCode,onHostApproved,decision,onStoring)
+    suspend fun pairNearby(route:TetherRoute,deviceName:String,deviceKind:String,onCode:suspend(String)->Unit,onHostApproved:suspend()->Unit,decision:()->Boolean?,onStoring:suspend()->Unit={},inviteToken:String?=null):NearbyOutcome {
+        try { val outcome=client.pairNearby(route,deviceName,deviceKind,onCode,onHostApproved,decision,onStoring,inviteToken)
             if(outcome is NearbyOutcome.Paired) { load(); selectHost(outcome.record.id); scope.launch { runCatching { reconnect(outcome.record.id) } } }
             return outcome
         } catch(e:Exception) { withContext(NonCancellable) { runCatching { load() } }; throw e }

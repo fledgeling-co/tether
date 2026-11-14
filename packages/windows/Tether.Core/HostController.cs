@@ -27,7 +27,10 @@ public sealed record HostRoute(string Mode,string? Address=null,ushort Port=0,st
 public sealed record HostClient(string Id,IReadOnlyList<string> Services,int? ActiveSessions,bool? RecentlySeen,long? LastSeenUnixMs,string? Name=null);
 public sealed record PairingWindow(string Code,DateTimeOffset ExpiresAt,int AttemptsRemaining);
 /// <summary>A device waiting for this host's owner to compare its code and approve or decline.</summary>
-public sealed record NearbyRequest(ulong Id,string Name,string Kind,string Code,DateTimeOffset ExpiresAt,bool DeviceApproved);
+/// <summary>A device waiting for this host's owner to compare its code. <paramref name="InviteToken"/> is the one-time token the
+/// device echoed from an invite, when it answered one: compare it against what <c>InviteAsync</c> returned to tell the device this
+/// computer invited from any other. An announced name is a label the requester chose and is never that evidence.</summary>
+public sealed record NearbyRequest(ulong Id,string Name,string Kind,string Code,DateTimeOffset ExpiresAt,bool DeviceApproved,string? InviteToken=null);
 /// <summary>An app-owned helper and private inherited pipes; stdout is parsed and never logged.</summary>
 public sealed class TetherHostController : INotifyPropertyChanged,IAsyncDisposable
 {
@@ -141,11 +144,12 @@ public sealed class TetherHostController : INotifyPropertyChanged,IAsyncDisposab
         if(ListeningAddress==null||!IPEndPoint.TryParse(ListeningAddress,out var endpoint)||State!=HostRunState.Listening)throw new TetherException(TetherError.Unavailable);
         announcement?.Dispose();announcement=new TetherNearbyAnnouncement(AppId,name,kind,(ushort)endpoint.Port,NearbyService.Host,HostKey);
     }
-    /// <summary>Invites a device from the nearby list. It connects back and both screens show the code.</summary>
-    public async Task InviteAsync(NearbyPeer peer,string hostName,CancellationToken token=default)
+    /// <summary>Invites a device from the nearby list. It connects back and both screens show the code. Returns the one-time
+    /// token that device issued; the request carrying it is the one that answered this invite.</summary>
+    public async Task<string> InviteAsync(NearbyPeer peer,string hostName,CancellationToken token=default)
     {
         if(ListeningAddress==null||!IPEndPoint.TryParse(ListeningAddress,out var endpoint)||!AllowsNearby)throw new TetherException(TetherError.Unavailable);
-        await TetherNearbyInviteListener.InviteAsync(peer,AppId,hostName,(ushort)endpoint.Port,token);
+        return await TetherNearbyInviteListener.InviteAsync(peer,AppId,hostName,(ushort)endpoint.Port,token);
     }
     public async Task RefreshNearbyAsync(CancellationToken token=default)
     {
@@ -155,7 +159,8 @@ public sealed class TetherHostController : INotifyPropertyChanged,IAsyncDisposab
             if(item.TryGetProperty("decision",out var decision)&&decision.ValueKind!=JsonValueKind.Null)continue;
             var code=item.GetProperty("code").GetString();var seconds=item.GetProperty("expires_in_seconds").GetInt32();
             if(code is not{Length:6}||!code.All(char.IsAsciiDigit)||seconds is<0 or>60)throw new TetherException(TetherError.Protocol);
-            list.Add(new(item.GetProperty("id").GetUInt64(),TetherClient.Label(item.GetProperty("name").GetString()??""),TetherClient.Label(item.GetProperty("kind").GetString()??""),code,DateTimeOffset.UtcNow.AddSeconds(seconds),item.GetProperty("client_approved").GetBoolean()));
+            var echoed=item.TryGetProperty("invite_token",out var carried)&&carried.ValueKind==JsonValueKind.String?carried.GetString():null;
+            list.Add(new(item.GetProperty("id").GetUInt64(),TetherClient.Label(item.GetProperty("name").GetString()??""),TetherClient.Label(item.GetProperty("kind").GetString()??""),code,DateTimeOffset.UtcNow.AddSeconds(seconds),item.GetProperty("client_approved").GetBoolean(),echoed));
         }
         lock(ownerState){NearbyRequests=list;AllowsNearby=root.GetProperty("allow").GetBoolean();NearbyClosedForSafety=root.TryGetProperty("closed",out var closed)&&closed.ValueKind==JsonValueKind.String;}Changed();
     }

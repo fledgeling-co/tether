@@ -27,7 +27,7 @@ interface TetherClientManaging : Closeable {
     fun retireStreams(hostId:String):Closeable { closeStreams(hostId); return Closeable {} }
     /** Pairs by comparing a six-digit code shown on both devices. [decision] returns this device owner's answer, or null while undecided. */
     /** [onStoring] fires once both have approved and the acknowledgement is about to make the pairing irreversible. */
-    suspend fun pairNearby(route:TetherRoute,deviceName:String,deviceKind:String,onCode:suspend(String)->Unit,onHostApproved:suspend()->Unit,decision:()->Boolean?,onStoring:suspend()->Unit={}):NearbyOutcome = throw TetherException("nearby_closed")
+    suspend fun pairNearby(route:TetherRoute,deviceName:String,deviceKind:String,onCode:suspend(String)->Unit,onHostApproved:suspend()->Unit,decision:()->Boolean?,onStoring:suspend()->Unit={},inviteToken:String?=null):NearbyOutcome = throw TetherException("nearby_closed")
 }
 
 internal class Session private constructor(private val carrier:Carrier, private val cipher:Long, val hostKey:String, val binding:String,private val release:()->Unit):SecureChannel {
@@ -135,7 +135,7 @@ class TetherClient(context:Context,override val appId:String,private val allowIn
             } finally { session?.let(::closeSession) }
         } } finally { pairing.unlock() }
     }
-    override suspend fun pairNearby(route:TetherRoute,deviceName:String,deviceKind:String,onCode:suspend(String)->Unit,onHostApproved:suspend()->Unit,decision:()->Boolean?,onStoring:suspend()->Unit):NearbyOutcome {
+    override suspend fun pairNearby(route:TetherRoute,deviceName:String,deviceKind:String,onCode:suspend(String)->Unit,onHostApproved:suspend()->Unit,decision:()->Boolean?,onStoring:suspend()->Unit,inviteToken:String?):NearbyOutcome {
         ensureOpen(); requireTether(route is TetherRoute.PrivateNetwork,"nearby_closed"); if(!pairing.tryLock())throw TetherException("busy")
         try { return operation(null) {
             var session:Session?=null
@@ -144,7 +144,9 @@ class TetherClient(context:Context,override val appId:String,private val allowIn
                 synchronized(life) { ensureOpen(); sessions.add(active) }
                 // The shared flow applies the approval rules: an answer counts only after the code has been up for a second and
                 // the decision has read undecided since it appeared; a decline is final and beats a racing ready.
-                val begun=NativeBridge.invoke("nearby.begin","app" to appId,"binding" to active.binding,"clientKey" to pub,"hostKey" to active.hostKey,"name" to deviceName,"kind" to deviceKind)
+                val fields=mutableListOf("app" to appId,"binding" to active.binding,"clientKey" to pub,"hostKey" to active.hostKey,"name" to deviceName,"kind" to deviceKind)
+                if(inviteToken!=null)fields.add("inviteToken" to inviteToken)
+                val begun=NativeBridge.invoke("nearby.begin",*fields.toTypedArray())
                 drive(active,route,pub,begun,onCode,onHostApproved,decision,onStoring)
             } finally { session?.let(::closeSession) }
         } } finally { pairing.unlock() }

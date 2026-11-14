@@ -12,8 +12,10 @@ public static class NearbyService { public const string Host = "_tether._tcp"; p
 /// <summary>Something announcing this app on the local network. Its name is a label shown beside the code, never trusted on its own.</summary>
 public sealed record NearbyPeer(string Id, string Name, string Kind, string? HostKey, IReadOnlyList<string> Addresses, ushort Port);
 
-/// <summary>An invitation a host sent to this device: connect to this route and pair.</summary>
-public sealed record NearbyInvite(TetherRoute Route, string HostName);
+/// <summary>An invitation a host sent to this device: connect to this route and pair. <paramref name="Token"/> is the
+/// one-time token this device issued on the connection the invite arrived over, repeated in <c>pair.nearby</c> so the
+/// inviting computer can tell this device's request from any other.</summary>
+public sealed record NearbyInvite(TetherRoute Route, string HostName, string Token);
 
 /// <summary>Windows DNS-SD (dnsapi.dll, Windows 10 and later). Each call is one bounded query; callers repeat browsing.</summary>
 internal static class DnsSd
@@ -180,8 +182,68 @@ public sealed class TetherNearbyAnnouncement : IDisposable
     }
 }
 
+/// <summary>The one-time invite token, minted and checked by the shared Rust core so every kit agrees on what a valid
+/// invite is. Nothing here decides trust: the code comparison does.</summary>
+internal static class NearbyInviteToken
+{
+    internal static string Mint()
+    {
+        using var r = Native.Call(new() { { "command", "discovery.invite_token" } });
+        return r.RootElement.GetProperty("token").GetString() ?? throw new TetherException(TetherError.Protocol);
+    }
+
+    internal static byte[] Challenge(string appId, string token)
+    {
+        using var r = Native.Call(new() { { "command", "discovery.challenge" }, { "app", appId }, { "token", token } });
+        return Line(r.RootElement.GetProperty("line").GetString());
+    }
+
+    internal static string? ReadChallenge(string appId, string line)
+    {
+        try
+        {
+            using var r = Native.Call(new() { { "command", "discovery.read_challenge" }, { "app", appId }, { "line", line } });
+            return r.RootElement.GetProperty("token").ValueKind == JsonValueKind.String ? r.RootElement.GetProperty("token").GetString() : null;
+        }
+        catch { return null; }
+    }
+
+    internal static byte[] Invite(string appId, string hostName, ushort port, string token)
+    {
+        using var r = Native.Call(new() { { "command", "discovery.invite" }, { "app", appId }, { "name", hostName }, { "port", (int)port }, { "token", token } });
+        return Line(r.RootElement.GetProperty("line").GetString());
+    }
+
+    internal static ReadInviteResult? ReadInvite(string appId, string line, string remote, string issued)
+    {
+        try
+        {
+            using var r = Native.Call(new() { { "command", "discovery.read_invite" }, { "app", appId }, { "line", line }, { "remote", remote }, { "token", issued } });
+            var invite = r.RootElement.GetProperty("invite");
+            if (invite.ValueKind != JsonValueKind.Object) return null;
+            var port = invite.GetProperty("port").GetInt32();
+            if (port is < 1 or > 65535) return null;
+            return new ReadInviteResult(invite.GetProperty("host").GetString() ?? remote, (ushort)port,
+                                        invite.TryGetProperty("name", out var name) ? name.GetString() ?? "Computer" : "Computer");
+        }
+        catch { return null; }
+    }
+
+    private static byte[] Line(string? text)
+    {
+        if (text is null) throw new TetherException(TetherError.Protocol);
+        return Encoding.UTF8.GetBytes(text).Concat(new byte[] { 10 }).ToArray();
+    }
+
+    internal readonly record struct ReadInviteResult(string Host, ushort Port, string Name);
+}
+
 /// <summary>This device's invite listener, announced while Add a computer is open. An invite only starts an ordinary nearby pairing to
-/// the inviting address; the code comparison still decides trust.</summary>
+/// the inviting address; the code comparison still decides trust.
+///
+/// Every connection is answered with a fresh one-time token, and an invite is read only when it echoes that token, so an
+/// invite has to come from something that opened a connection here and read a 32-byte secret off it and each token admits
+/// one invite. It does not identify the inviting computer: anything on the local network can open that connection.</summary>
 public sealed class TetherNearbyInviteListener : IDisposable
 {
     private readonly TcpListener listener = new(IPAddress.Any, 0); private readonly TetherNearbyAnnouncement announcement; private readonly CancellationTokenSource lifetime = new();
@@ -200,12 +262,17 @@ public sealed class TetherNearbyInviteListener : IDisposable
                     {
                         try
                         {
-                            using var timeout = new CancellationTokenSource(3000); var buffer = new byte[512]; var read = await client.GetStream().ReadAsync(buffer, timeout.Token);
-                            var line = Encoding.UTF8.GetString(buffer, 0, read).Split('\n')[0]; using var json = JsonDocument.Parse(line); var root = json.RootElement;
-                            if (root.GetProperty("v").GetInt32() != 1 || root.GetProperty("app").GetString() != appId) return;
-                            var port = root.GetProperty("port").GetInt32(); if (port is < 1 or > 65535) return;
-                            if (client.Client.RemoteEndPoint is IPEndPoint remote)
-                                onInvite(new NearbyInvite(TetherRoute.Direct(remote.Address.MapToIPv4().ToString(), (ushort)port), DnsSd.Label(root.TryGetProperty("name", out var n) ? n.GetString() : null, "Computer")));
+                            using var timeout = new CancellationTokenSource(3000);
+                            if (client.Client.RemoteEndPoint is not IPEndPoint remote) return;
+                            // The challenge goes out first: an invite that does not come back carrying this token is
+                            // not one this device asked for, whatever name it announces.
+                            var token = NearbyInviteToken.Mint();
+                            var challenge = NearbyInviteToken.Challenge(appId, token);
+                            await client.GetStream().WriteAsync(challenge, timeout.Token);
+                            var buffer = new byte[512]; var read = await client.GetStream().ReadAsync(buffer, timeout.Token);
+                            var line = Encoding.UTF8.GetString(buffer, 0, read).Split('\n')[0];
+                            if (NearbyInviteToken.ReadInvite(appId, line, remote.Address.MapToIPv4().ToString(), token) is not { } invite) return;
+                            onInvite(new NearbyInvite(TetherRoute.Direct(invite.Host, invite.Port), invite.Name, token));
                         }
                         catch { }
                     }
@@ -214,8 +281,9 @@ public sealed class TetherNearbyInviteListener : IDisposable
         });
     }
 
-    /// <summary>Sent by a host to a device it found: "pair with me at this port".</summary>
-    public static async Task InviteAsync(NearbyPeer peer, string appId, string hostName, ushort port, CancellationToken token = default)
+    /// <summary>Sent by a host to a device it found: "pair with me at this port". Returns the one-time token that device
+    /// issued on this connection; hold it, because the request carrying it is the one that answered this invite.</summary>
+    public static async Task<string> InviteAsync(NearbyPeer peer, string appId, string hostName, ushort port, CancellationToken token = default)
     {
         Scope.Validate(appId); Exception? last = null;
         foreach (var address in peer.Addresses)
@@ -224,12 +292,15 @@ public sealed class TetherNearbyInviteListener : IDisposable
             {
                 using var client = new TcpClient(AddressFamily.InterNetwork); using var timeout = CancellationTokenSource.CreateLinkedTokenSource(token); timeout.CancelAfter(3000);
                 await client.ConnectAsync(IPAddress.Parse(address), peer.Port, timeout.Token);
-                var line = JsonSerializer.SerializeToUtf8Bytes(new Dictionary<string, object> { { "v", 1 }, { "app", appId }, { "port", (int)port }, { "name", DnsSd.Label(hostName, "Computer") } });
-                await client.GetStream().WriteAsync(line.Concat(new byte[] { 10 }).ToArray(), timeout.Token); return;
+                var buffer = new byte[512]; var read = await client.GetStream().ReadAsync(buffer, timeout.Token);
+                var challenge = Encoding.UTF8.GetString(buffer, 0, read).Split('\n')[0];
+                if (NearbyInviteToken.ReadChallenge(appId, challenge) is not { } issued) throw new TetherException(TetherError.Protocol);
+                await client.GetStream().WriteAsync(NearbyInviteToken.Invite(appId, hostName, port, issued), timeout.Token);
+                return issued;
             }
             catch (Exception e) when (!token.IsCancellationRequested) { last = e; }
         }
-        throw new TetherException(TetherError.InvalidRoute);
+        throw last is TetherException refusal ? refusal : new TetherException(TetherError.InvalidRoute);
     }
 
     public void Dispose() { lifetime.Cancel(); listener.Stop(); announcement.Dispose(); }

@@ -1277,8 +1277,11 @@ async fn nearby(
         &path,
         "test.app",
         route,
-        name,
-        "iPhone",
+        client::NearbyDevice {
+            name,
+            kind: "iPhone",
+            invite_token: None,
+        },
         move |code| {
             *seen.lock().unwrap() = Some(code.to_owned());
         },
@@ -1361,8 +1364,11 @@ async fn nearby_pairing_is_refused_over_the_relay_and_when_closed() -> Result<()
         &path,
         "test.app",
         f.route.clone(),
-        "Phone",
-        "iPhone",
+        client::NearbyDevice {
+            name: "Phone",
+            kind: "iPhone",
+            invite_token: None,
+        },
         |_| {},
         decision
     )
@@ -1377,8 +1383,11 @@ async fn nearby_pairing_is_refused_over_the_relay_and_when_closed() -> Result<()
         &path,
         "test.app",
         f.route.clone(),
-        "Phone",
-        "iPhone",
+        client::NearbyDevice {
+            name: "Phone",
+            kind: "iPhone",
+            invite_token: None,
+        },
         |_| {},
         decision
     )
@@ -1425,8 +1434,11 @@ async fn noise_terminating_mitm_cannot_forward_a_nearby_commitment() -> Result<(
         &path,
         "test.app",
         Route::Direct(address),
-        "Phone",
-        "iPhone",
+        client::NearbyDevice {
+            name: "Phone",
+            kind: "iPhone",
+            invite_token: None,
+        },
         |_| {},
         decision
     )
@@ -1438,6 +1450,88 @@ async fn noise_terminating_mitm_cannot_forward_a_nearby_commitment() -> Result<(
         .unwrap()
         .is_empty());
     assert!(storage::load::<HostConfig>(&f.config)?.devices.is_empty());
+    Ok(())
+}
+
+#[tokio::test]
+async fn an_invited_request_reaches_the_owner_by_its_token_and_a_name_alone_does_not() -> Result<()>
+{
+    let f = Fixture::new(false).await?;
+    // What the inviting computer echoed to this device, and what the device repeats back.
+    let token = tether_model::discovery::invite_token();
+    // Two devices claim the same name. Only one carries the token the invite named.
+    let mut published = Vec::new();
+    for echoed in [Some(token.clone()), None] {
+        let identity = tether_core::Identity::generate()?;
+        let mut session = tether::protocol::initiate(
+            f.route.connect("test.app").await?,
+            &identity,
+            "test.app",
+            None,
+        )
+        .await?;
+        let (client, commitment) = tether_core::SasClient::start(
+            "test.app",
+            session.binding,
+            identity.public(),
+            session.peer,
+        )?;
+        let mut request = serde_json::json!({"type":"pair.nearby","v":1,
+            "commit":STANDARD.encode(commitment),"name":"Studio Mac","kind":"iPhone"});
+        if let Some(echoed) = &echoed {
+            request["tok"] = echoed.clone().into();
+        }
+        session.send(request).await?;
+        let nonce = session.receive().await?;
+        assert_eq!(nonce["type"], "pair.nearby.nonce");
+        let (reveal, _) =
+            client.finish(&STANDARD.decode(nonce["nonce"].as_str().ok_or("no nonce")?)?)?;
+        session
+            .send(
+                serde_json::json!({"type":"pair.nearby.reveal","v":1,"nonce":STANDARD.encode(reveal)}),
+            )
+            .await?;
+        assert_eq!(session.receive().await?["type"], "pair.nearby.held");
+        let listing = f.host.owner_nearby("test.app")?;
+        let row = listing["requests"]
+            .as_array()
+            .and_then(|list| {
+                list.iter().find(|row| {
+                    row["name"] == "Studio Mac"
+                        && !published.contains(&row["id"].as_u64().unwrap_or(0))
+                })
+            })
+            .ok_or("the request was not published to the owner")?
+            .clone();
+        published.push(row["id"].as_u64().unwrap_or(0));
+        assert_eq!(
+            row["invite_token"].as_str().map(str::to_owned),
+            echoed,
+            "the owner screen is told which request answered the invite"
+        );
+        drop(session);
+        sleep(Duration::from_millis(50)).await;
+    }
+    // A misshapen claim is carried as no token at all rather than as a token that might match.
+    let identity = tether_core::Identity::generate()?;
+    let mut session = tether::protocol::initiate(
+        f.route.connect("test.app").await?,
+        &identity,
+        "test.app",
+        None,
+    )
+    .await?;
+    let (_, commitment) = tether_core::SasClient::start(
+        "test.app",
+        session.binding,
+        identity.public(),
+        session.peer,
+    )?;
+    session
+        .send(serde_json::json!({"type":"pair.nearby","v":1,
+            "commit":STANDARD.encode(commitment),"name":"Studio Mac","kind":"iPhone","tok":"nope"}))
+        .await?;
+    assert_eq!(session.receive().await?["type"], "pair.nearby.nonce");
     Ok(())
 }
 
@@ -1479,8 +1573,11 @@ async fn abandoned_nearby_exchanges_close_pairing_before_a_code_can_be_ground() 
         &path,
         "test.app",
         f.route.clone(),
-        "Phone",
-        "iPhone",
+        client::NearbyDevice {
+            name: "Phone",
+            kind: "iPhone",
+            invite_token: None,
+        },
         |_| {},
         decision
     )

@@ -19,7 +19,7 @@ public interface ITetherClient
     /// <summary>Pairs by comparing a six-digit code shown on both devices. <paramref name="onCode"/> must complete only once the code is on screen;
     /// <paramref name="decision"/> returns this device owner's answer, or null while undecided; <paramref name="onStoring"/> fires when the
     /// acknowledgement is about to make the pairing irreversible, after which cancelling leaves it pending rather than declined.</summary>
-    Task<NearbyOutcome> PairNearbyAsync(TetherRoute route,string deviceName,string deviceKind,Func<string,Task> onCode,Func<Task>? onHostApproved,Func<bool?> decision,CancellationToken token=default,Func<Task>? onStoring=null)=>throw new TetherException(TetherError.NearbyRefused);
+    Task<NearbyOutcome> PairNearbyAsync(TetherRoute route,string deviceName,string deviceKind,Func<string,Task> onCode,Func<Task>? onHostApproved,Func<bool?> decision,CancellationToken token=default,Func<Task>? onStoring=null,string? inviteToken=null)=>throw new TetherException(TetherError.NearbyRefused);
 }
 public sealed class TetherClient : ITetherClient,IDisposable
 {
@@ -43,7 +43,9 @@ public sealed class TetherClient : ITetherClient,IDisposable
             using(begun)return await Drive(session,route,begun,null,null,null,token) is NearbyOutcome.Paired paired?paired.Record:throw new TetherException(TetherError.Protocol);
         }finally{pairing.Release();}
     }
-    public async Task<NearbyOutcome> PairNearbyAsync(TetherRoute route,string deviceName,string deviceKind,Func<string,Task> onCode,Func<Task>? onHostApproved,Func<bool?> decision,CancellationToken token=default,Func<Task>? onStoring=null)
+    /// <summary><paramref name="inviteToken"/> is the one-time token this device issued to a computer that invited it; it is
+    /// repeated to the host so the host's owner can see which request answered that invite.</summary>
+    public async Task<NearbyOutcome> PairNearbyAsync(TetherRoute route,string deviceName,string deviceKind,Func<string,Task> onCode,Func<Task>? onHostApproved,Func<bool?> decision,CancellationToken token=default,Func<Task>? onStoring=null,string? inviteToken=null)
     {
         EnsureOpen();if(route.Mode!="direct")throw new TetherException(TetherError.NearbyRefused);if(!await pairing.WaitAsync(0,token))throw new TetherException(TetherError.Busy);
         try {
@@ -51,7 +53,9 @@ public sealed class TetherClient : ITetherClient,IDisposable
             if(store.Find(Convert.ToBase64String(session.Peer))!=null)throw new TetherException(TetherError.PairingExists);
             // The shared flow applies the approval rules: an answer counts only after the code has been up for a second and the
             // decision has read undecided since it appeared; a decline is final and beats a racing ready.
-            using var begun=Native.Call(new(){{"command","nearby.begin"},{"app",AppId},{"binding",session.Binding},{"clientKey",CurrentIdentity.Public},{"hostKey",session.Peer},{"name",deviceName},{"kind",deviceKind}});
+            var request=new Dictionary<string,object?>{{"command","nearby.begin"},{"app",AppId},{"binding",session.Binding},{"clientKey",CurrentIdentity.Public},{"hostKey",session.Peer},{"name",deviceName},{"kind",deviceKind}};
+            if(inviteToken is not null)request["inviteToken"]=inviteToken;
+            using var begun=Native.Call(request);
             return await Drive(session,route,begun,onCode,onHostApproved,decision,token,onStoring);
         }finally{pairing.Release();}
     }

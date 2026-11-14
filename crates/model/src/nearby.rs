@@ -77,6 +77,9 @@ pub struct NearbyClient {
 
 impl NearbyClient {
     /// Starts after the encrypted channel is up. `binding` is its handshake hash.
+    /// `invite_token` is the one-time token this device issued to a computer that invited it,
+    /// repeated here so the host can tell the device it invited from any other. A missing or
+    /// misshapen token is simply not sent: the request then arrives as an ordinary one.
     pub fn begin(
         app_id: &str,
         binding: [u8; 32],
@@ -84,12 +87,16 @@ impl NearbyClient {
         host_key: [u8; 32],
         device_name: &str,
         device_kind: &str,
+        invite_token: Option<&str>,
     ) -> Result<(Self, Vec<Action>), tether_core::Error> {
         let (sas, commitment) = SasClient::start(app_id, binding, client_key, host_key)?;
-        let message = json!({
+        let mut message = json!({
             "type": "pair.nearby", "v": 1, "commit": STANDARD.encode(commitment),
             "name": crate::view::label(device_name, "Device"), "kind": crate::view::label(device_kind, "Device"),
         });
+        if let Some(token) = invite_token.filter(|token| crate::discovery::token_shape(token)) {
+            message["tok"] = token.into();
+        }
         let client = Self {
             step: Step::AwaitNonce(sas),
             phase: Phase::Checking,
@@ -422,9 +429,36 @@ mod tests {
     }
 
     #[test]
+    fn the_invite_token_is_echoed_in_pair_nearby_and_nothing_else_is() {
+        let token = crate::discovery::invite_token();
+        let (_, invited) = NearbyClient::begin(
+            APP,
+            [7; 32],
+            [1; 32],
+            [2; 32],
+            "Phone",
+            "iPhone",
+            Some(&token),
+        )
+        .unwrap();
+        assert_eq!(sent(&invited)[0]["tok"], token);
+        let (_, plain) =
+            NearbyClient::begin(APP, [7; 32], [1; 32], [2; 32], "Phone", "iPhone", None).unwrap();
+        assert_eq!(
+            sent(&plain)[0]["tok"],
+            Value::Null,
+            "a request nobody invited claims no token"
+        );
+        let (_, misshapen) =
+            NearbyClient::begin(APP, [7; 32], [1; 32], [2; 32], "Phone", "iPhone", Some("x"))
+                .unwrap();
+        assert_eq!(sent(&misshapen)[0]["tok"], Value::Null);
+    }
+
+    #[test]
     fn both_approve_then_store_ack_and_confirm() {
         let (mut c, start) =
-            NearbyClient::begin(APP, [7; 32], [1; 32], [2; 32], "Phone", "iPhone").unwrap();
+            NearbyClient::begin(APP, [7; 32], [1; 32], [2; 32], "Phone", "iPhone", None).unwrap();
         let (_, held) = to_code(&mut c, &start);
         assert_eq!(
             sent(&held)[0]["approve"],
@@ -452,14 +486,14 @@ mod tests {
     #[test]
     fn an_approval_set_before_the_code_or_within_a_second_does_not_count() {
         let (mut c, start) =
-            NearbyClient::begin(APP, [7; 32], [1; 32], [2; 32], "Phone", "iPhone").unwrap();
+            NearbyClient::begin(APP, [7; 32], [1; 32], [2; 32], "Phone", "iPhone", None).unwrap();
         let (_, held) = to_code_deciding(&mut c, &start, Some(true));
         assert_eq!(sent(&held)[0]["approve"], Value::Null);
         let _ = c.receive(&waiting(false), Some(true), 1_200);
         // Always "approve", never undecided: it never counts.
         assert_eq!(sent(&c.tick(Some(true), 3_000))[0]["approve"], Value::Null);
         let (mut quick, start) =
-            NearbyClient::begin(APP, [7; 32], [1; 32], [2; 32], "Phone", "iPhone").unwrap();
+            NearbyClient::begin(APP, [7; 32], [1; 32], [2; 32], "Phone", "iPhone", None).unwrap();
         let _ = to_code(&mut quick, &start);
         let _ = quick.receive(&waiting(false), None, 1_100);
         assert_eq!(
@@ -474,7 +508,7 @@ mod tests {
     #[test]
     fn the_second_starts_when_the_code_is_on_screen_not_when_it_arrives() {
         let (mut c, start) =
-            NearbyClient::begin(APP, [7; 32], [1; 32], [2; 32], "Phone", "iPhone").unwrap();
+            NearbyClient::begin(APP, [7; 32], [1; 32], [2; 32], "Phone", "iPhone", None).unwrap();
         let (host, nonce) = host_reply(&sent(&start)[0]);
         let reveal = c.receive(&nonce, None, 0);
         let _ = host.finish(
@@ -502,7 +536,7 @@ mod tests {
     #[test]
     fn a_decline_before_the_ack_discards_the_pending_record() {
         let (mut c, start) =
-            NearbyClient::begin(APP, [7; 32], [1; 32], [2; 32], "Phone", "iPhone").unwrap();
+            NearbyClient::begin(APP, [7; 32], [1; 32], [2; 32], "Phone", "iPhone", None).unwrap();
         let _ = to_code(&mut c, &start);
         let _ = c.receive(&waiting(false), None, 1_200);
         let _ = c.tick(Some(true), 2_500);
@@ -517,7 +551,7 @@ mod tests {
     #[test]
     fn a_decline_is_final_and_beats_a_racing_ready() {
         let (mut c, start) =
-            NearbyClient::begin(APP, [7; 32], [1; 32], [2; 32], "Phone", "iPhone").unwrap();
+            NearbyClient::begin(APP, [7; 32], [1; 32], [2; 32], "Phone", "iPhone", None).unwrap();
         let _ = to_code(&mut c, &start);
         let _ = c.receive(&waiting(false), None, 1_200);
         let _ = c.tick(Some(true), 2_500);
@@ -527,7 +561,7 @@ mod tests {
         );
         assert!(c.declined_by_self());
         let (mut d, start) =
-            NearbyClient::begin(APP, [7; 32], [1; 32], [2; 32], "Phone", "iPhone").unwrap();
+            NearbyClient::begin(APP, [7; 32], [1; 32], [2; 32], "Phone", "iPhone", None).unwrap();
         let _ = to_code(&mut d, &start);
         let _ = d.receive(&waiting(false), None, 1_200);
         assert_eq!(sent(&d.tick(Some(false), 1_300))[0]["approve"], false);
@@ -540,7 +574,7 @@ mod tests {
     #[test]
     fn host_decline_expiry_and_refusals_end_the_flow() {
         let (mut c, start) =
-            NearbyClient::begin(APP, [7; 32], [1; 32], [2; 32], "Phone", "iPhone").unwrap();
+            NearbyClient::begin(APP, [7; 32], [1; 32], [2; 32], "Phone", "iPhone", None).unwrap();
         let _ = to_code(&mut c, &start);
         assert_eq!(
             c.receive(
@@ -552,7 +586,7 @@ mod tests {
         );
         assert!(!c.declined_by_self());
         let (mut e, start) =
-            NearbyClient::begin(APP, [7; 32], [1; 32], [2; 32], "Phone", "iPhone").unwrap();
+            NearbyClient::begin(APP, [7; 32], [1; 32], [2; 32], "Phone", "iPhone", None).unwrap();
         let _ = to_code(&mut e, &start);
         let _ = e.receive(&waiting(false), None, 1_200);
         assert_eq!(
@@ -561,13 +595,13 @@ mod tests {
             "the device's own clock"
         );
         let (mut f, _) =
-            NearbyClient::begin(APP, [7; 32], [1; 32], [2; 32], "Phone", "iPhone").unwrap();
+            NearbyClient::begin(APP, [7; 32], [1; 32], [2; 32], "Phone", "iPhone", None).unwrap();
         assert_eq!(
             f.receive(&json!({"type":"error","v":1,"code":"paused"}), None, 0),
             vec![Action::Failed("paused".into())]
         );
         let (mut g, _) =
-            NearbyClient::begin(APP, [7; 32], [1; 32], [2; 32], "Phone", "iPhone").unwrap();
+            NearbyClient::begin(APP, [7; 32], [1; 32], [2; 32], "Phone", "iPhone", None).unwrap();
         assert_eq!(
             g.receive(&json!({"type":"pair.ready","v":1}), Some(true), 0),
             vec![Action::Failed("invalid_protocol".into())],

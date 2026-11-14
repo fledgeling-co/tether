@@ -72,6 +72,7 @@ pub(crate) fn flow(
                 fixed(request, "hostKey")?,
                 text(request, "name")?,
                 optional(request, "kind").unwrap_or("Device"),
+                optional(request, "inviteToken"),
             )
             .map_err(|_| "crypto_refused")?;
             started(Object::Nearby(Box::new(flow)), list)
@@ -222,16 +223,28 @@ pub(crate) fn stateless(command: &str, request: &Value) -> Result<Value, &'stati
             &strings(request, "resolved"),
             port(request, "port"),
         )})),
+        "discovery.invite_token" => Ok(json!({"token": discovery::invite_token()})),
+        "discovery.challenge" => Ok(json!({"line": discovery::challenge(
+            text(request, "app")?,
+            text(request, "token")?,
+        )?
+        .to_string()})),
+        "discovery.read_challenge" => Ok(json!({"token": discovery::read_challenge(
+            text(request, "app")?,
+            text(request, "line")?,
+        )})),
         "discovery.invite" => Ok(json!({"line": discovery::invite(
             text(request, "app")?,
             optional(request, "name").unwrap_or(""),
             port(request, "port"),
-        )
+            text(request, "token")?,
+        )?
         .to_string()})),
         "discovery.read_invite" => Ok(json!({"invite": discovery::read_invite(
             text(request, "app")?,
             text(request, "line")?,
             text(request, "remote")?,
+            text(request, "token")?,
         )})),
         "discovery.route" => Ok(json!({"route": invite::route(
             request.get("route").ok_or("invalid_request")?,
@@ -312,6 +325,69 @@ mod tests {
             &mut registry
         )
         .is_err());
+    }
+
+    #[test]
+    fn the_invite_exchange_answers_over_the_abi_and_refuses_an_untokened_line() {
+        let token = stateless("discovery.invite_token", &json!({})).unwrap()["token"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let challenge = stateless(
+            "discovery.challenge",
+            &json!({"app":"app.test","token":token}),
+        )
+        .unwrap()["line"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        assert_eq!(
+            stateless(
+                "discovery.read_challenge",
+                &json!({"app":"app.test","line":challenge})
+            )
+            .unwrap()["token"],
+            token
+        );
+        let line = stateless(
+            "discovery.invite",
+            &json!({"app":"app.test","name":"Studio Mac","port":15912,"token":token}),
+        )
+        .unwrap()["line"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let read = stateless(
+            "discovery.read_invite",
+            &json!({"app":"app.test","line":line,"remote":"192.168.1.5","token":token}),
+        )
+        .unwrap();
+        assert_eq!(read["invite"]["port"], 15912);
+        assert_eq!(read["invite"]["token"], token);
+        // The line anybody on the network could compose carries no token, so no kit reads it.
+        assert_eq!(
+            stateless("discovery.read_invite", &json!({"app":"app.test","line":"{\"v\":1,\"app\":\"app.test\",\"port\":15912}","remote":"192.168.1.5","token":token})).unwrap()["invite"],
+            Value::Null
+        );
+        assert_eq!(
+            stateless(
+                "discovery.invite",
+                &json!({"app":"app.test","name":"x","port":1,"token":"short"})
+            ),
+            Err("invalid_token")
+        );
+        // And the token travels on pair.nearby, which is what makes a host's invited marking mean something.
+        let mut registry = Registry {
+            next: 1,
+            objects: HashMap::new(),
+        };
+        let begun = call(
+            &mut registry,
+            json!({"command":"nearby.begin","app":"app.test","binding":STANDARD.encode([7u8;32]),
+                   "clientKey":STANDARD.encode([1u8;32]),"hostKey":STANDARD.encode([2u8;32]),
+                   "name":"Phone","kind":"iPhone","inviteToken":token}),
+        );
+        assert_eq!(begun["actions"][0]["message"]["tok"], token);
     }
 
     #[test]

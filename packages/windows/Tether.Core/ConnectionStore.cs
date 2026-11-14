@@ -57,9 +57,9 @@ public sealed class TetherConnectionStore : INotifyPropertyChanged,IAsyncDisposa
         SelectedHostId=peer.Id;await ConnectAsync(peer.Id,token);return Find(peer.Id);
     }
     /// <summary>Pairs with a nearby computer by comparing a code, then selects and connects it.</summary>
-    public async Task<NearbyOutcome> PairNearbyAsync(TetherRoute route,string deviceName,string deviceKind,Func<string,Task> onCode,Func<Task>? onHostApproved,Func<bool?> decision,CancellationToken token=default,Func<Task>? onStoring=null)
+    public async Task<NearbyOutcome> PairNearbyAsync(TetherRoute route,string deviceName,string deviceKind,Func<string,Task> onCode,Func<Task>? onHostApproved,Func<bool?> decision,CancellationToken token=default,Func<Task>? onStoring=null,string? inviteToken=null)
     {
-        await trust.WaitAsync(token);NearbyOutcome outcome;try{lock(state)EnsureOpen();try{outcome=await client.PairNearbyAsync(route,deviceName,deviceKind,onCode,onHostApproved,decision,token,onStoring);}finally{await Reload(CancellationToken.None);}}finally{trust.Release();}
+        await trust.WaitAsync(token);NearbyOutcome outcome;try{lock(state)EnsureOpen();try{outcome=await client.PairNearbyAsync(route,deviceName,deviceKind,onCode,onHostApproved,decision,token,onStoring,inviteToken);}finally{await Reload(CancellationToken.None);}}finally{trust.Release();}
         if(outcome is NearbyOutcome.Paired paired){SelectedHostId=paired.Record.Id;await ConnectAsync(paired.Record.Id,token);}return outcome;
     }
     public Task ReconnectAsync(string id,CancellationToken token=default)=>ConnectAsync(id,token);

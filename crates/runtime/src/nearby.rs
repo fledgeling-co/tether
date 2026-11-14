@@ -32,6 +32,10 @@ pub struct Request {
     pub peer: [u8; 32],
     pub name: String,
     pub kind: String,
+    /// The one-time token this device echoed from an invite it was sent, when it had one. The
+    /// owner's screen marks a request as invited by matching this against the token the invite
+    /// carried; a name is a label the requester chose and is never that evidence.
+    pub invite_token: Option<String>,
     pub code: SasCode,
     pub expires: Instant,
     pub client_approved: bool,
@@ -176,6 +180,7 @@ impl State {
         peer: [u8; 32],
         name: String,
         kind: String,
+        invite_token: Option<String>,
         code: SasCode,
         now: Instant,
     ) -> Admission {
@@ -205,6 +210,7 @@ impl State {
                 peer,
                 name,
                 kind,
+                invite_token,
                 code,
                 expires: now + LIFETIME,
                 client_approved: false,
@@ -290,6 +296,7 @@ impl State {
                 "id": id,
                 "name": request.name,
                 "kind": request.kind,
+                "invite_token": request.invite_token,
                 "code": request.code.digits(),
                 "expires_in_seconds": request.expires.saturating_duration_since(now).as_secs(),
                 "client_approved": request.client_approved,
@@ -327,7 +334,14 @@ mod tests {
         host.finish(&reveal).unwrap()
     }
     fn admit(state: &mut State, peer: u8, now: Instant) -> u64 {
-        match state.admit([peer; 32], "Phone".into(), "iPhone".into(), code(), now) {
+        match state.admit(
+            [peer; 32],
+            "Phone".into(),
+            "iPhone".into(),
+            None,
+            code(),
+            now,
+        ) {
             Admission::Admitted(id) => id,
             _ => panic!("refused"),
         }
@@ -392,7 +406,7 @@ mod tests {
             assert!(state.decide(id, false, now));
         }
         assert!(matches!(
-            state.admit([9; 32], "x".into(), "x".into(), code(), now),
+            state.admit([9; 32], "x".into(), "x".into(), None, code(), now),
             Admission::Paused
         ));
         assert!(matches!(
@@ -400,6 +414,7 @@ mod tests {
                 [9; 32],
                 "x".into(),
                 "x".into(),
+                None,
                 code(),
                 now + PAUSE + Duration::from_secs(1)
             ),
@@ -408,12 +423,12 @@ mod tests {
         let mut fresh = State::default();
         admit(&mut fresh, 1, now);
         assert!(matches!(
-            fresh.admit([1; 32], "x".into(), "x".into(), code(), now),
+            fresh.admit([1; 32], "x".into(), "x".into(), None, code(), now),
             Admission::Busy
         ));
         admit(&mut fresh, 2, now);
         assert!(matches!(
-            fresh.admit([3; 32], "x".into(), "x".into(), code(), now),
+            fresh.admit([3; 32], "x".into(), "x".into(), None, code(), now),
             Admission::Busy
         ));
     }
@@ -429,7 +444,7 @@ mod tests {
         assert!(!state.allows());
         assert!(!state.issue(now));
         assert!(matches!(
-            state.admit([1; 32], "x".into(), "x".into(), code(), now),
+            state.admit([1; 32], "x".into(), "x".into(), None, code(), now),
             Admission::Closed
         ));
         assert_eq!(state.listing(now)["closed"], "unfinished");
@@ -461,6 +476,55 @@ mod tests {
         assert_eq!(state.declines.len(), 1);
         state.sweep(now + PAUSE);
         assert!(state.declines.is_empty());
+    }
+
+    #[test]
+    fn an_invited_request_is_marked_by_its_token_and_never_by_its_name() {
+        let now = Instant::now();
+        let mut state = State::default();
+        let token = tether_model::discovery::invite_token();
+        match state.admit(
+            [1; 32],
+            "Studio Mac".into(),
+            "iPhone".into(),
+            Some(token.clone()),
+            code(),
+            now,
+        ) {
+            Admission::Admitted(_) => {}
+            _ => panic!("refused"),
+        }
+        // A second device announcing the same name carries no token.
+        match state.admit(
+            [2; 32],
+            "Studio Mac".into(),
+            "iPhone".into(),
+            None,
+            code(),
+            now,
+        ) {
+            Admission::Admitted(_) => {}
+            _ => panic!("refused"),
+        }
+        let listing = state.listing(now);
+        let requests = listing["requests"].as_array().unwrap();
+        assert_eq!(requests.len(), 2);
+        let tokens: Vec<&serde_json::Value> =
+            requests.iter().map(|row| &row["invite_token"]).collect();
+        assert!(
+            tokens.contains(&&serde_json::Value::String(token)),
+            "the owner's screen is given the token the device echoed"
+        );
+        assert!(
+            tokens.contains(&&serde_json::Value::Null),
+            "a request nobody invited is published with no token, however it is named"
+        );
+        assert!(
+            requests
+                .iter()
+                .all(|row| row["name"] == "Studio Mac" && row["kind"] == "iPhone"),
+            "the two are indistinguishable by name, which is the defect"
+        );
     }
 
     #[test]

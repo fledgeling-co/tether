@@ -17,6 +17,8 @@ import TetherKit
     @State private var removing: TetherHostClient?
     @State private var stopping = false
     @State private var presenceChecked: Date?
+    /// One-time tokens this Mac's own invites returned, not device names. A request is marked
+    /// as invited only when it echoes one of these.
     @State private var invited: Set<String> = []
     public init(controller: TetherHostController, initialServices: [TetherHostServiceProfile]) {
         self.controller = controller; self.initialServices = initialServices

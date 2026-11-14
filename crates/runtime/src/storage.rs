@@ -244,6 +244,142 @@ fn private_lock(path: &Path) -> Result<fs::File> {
         Ok(options.open(path)?)
     }
 }
+
+/// How long a configuration write waits for another holder before it gives up and says so.
+/// A caller that waits for ever has no way to tell a slow write from a wedged one.
+pub const LOCK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+/// Pause between attempts while waiting.
+const LOCK_RETRY: std::time::Duration = std::time::Duration::from_millis(25);
+
+/// The exclusive lock around one configuration file, with a bounded wait and a cleanup protocol.
+///
+/// There is no stale *lock*: the operating system releases an `flock` when its holder dies, so a
+/// lock file left behind by a crash blocks nothing. What is stale is the file, and removing it is
+/// what races a second caller between its `open` and its lock. The protocol closes that race
+/// rather than leaving the file behind:
+///
+/// * the holder unlinks the lock file while it still holds the lock, so nobody can open it again
+///   under that name before the lock is released;
+/// * every acquirer, having taken the lock, checks that the file it locked is still the one at
+///   that path. A caller that locked a file somebody else had already unlinked starts again, so
+///   two callers can never hold locks on two different files for the same configuration.
+///
+/// Windows needs neither half: `open_lock` opens without `FILE_SHARE_DELETE`, so the file cannot
+/// be unlinked while any holder has it open, and the removal is attempted after the handle closes
+/// and fails harmlessly when another holder has taken it by then.
+struct ConfigLock {
+    /// Taken only so the lock lives as long as the operation. `Drop` closes it before the
+    /// Windows removal, because a lock file open without `FILE_SHARE_DELETE` cannot be unlinked.
+    #[allow(
+        dead_code,
+        reason = "held for the lock's lifetime; read by Drop on Windows"
+    )]
+    file: Option<fs::File>,
+    path: PathBuf,
+}
+
+impl ConfigLock {
+    /// Takes the lock for `config`, waiting at most [`LOCK_TIMEOUT`].
+    fn acquire(config: &Path) -> Result<Self> {
+        let path = PathBuf::from(format!("{}.lock", config.display()));
+        let deadline = std::time::Instant::now() + LOCK_TIMEOUT;
+        loop {
+            let file = private_lock(&path)?;
+            loop {
+                match file.try_lock_exclusive() {
+                    Ok(()) => break,
+                    Err(_) if std::time::Instant::now() < deadline => {
+                        std::thread::sleep(LOCK_RETRY)
+                    }
+                    Err(_) => return Err(busy(&path).into()),
+                }
+            }
+            if same_lock_file(&file, &path)? {
+                record_holder(&file);
+                return Ok(Self {
+                    file: Some(file),
+                    path,
+                });
+            }
+            // The file we locked had already been unlinked by its previous holder; the live lock
+            // is whatever is at that path now, so take it from the top.
+            drop(file);
+            if std::time::Instant::now() >= deadline {
+                return Err(busy(&path).into());
+            }
+        }
+    }
+}
+
+impl Drop for ConfigLock {
+    fn drop(&mut self) {
+        // Unix: removed while the lock is still held, which is what makes the acquirer's identity
+        // check sufficient. Windows: removed after the handle closes, and refused if another
+        // holder has it open, which is equally safe because it cannot be removed while open.
+        #[cfg(not(windows))]
+        let _ = fs::remove_file(&self.path);
+        #[cfg(windows)]
+        {
+            drop(self.file.take());
+            let _ = fs::remove_file(&self.path);
+        }
+    }
+}
+
+/// What a caller is told when the wait runs out. It names the file and the holder it could find,
+/// because "operation failed" over a lock is the message that sends people looking at the wrong
+/// thing — a lock file lying beside a configuration is inert, and a live holder is not.
+fn busy(lock_path: &Path) -> String {
+    let holder = fs::read_to_string(lock_path)
+        .ok()
+        .and_then(|text| {
+            let line = text.lines().next()?.trim().to_owned();
+            (!line.is_empty() && line.len() <= 64).then_some(line)
+        })
+        .unwrap_or_else(|| "unknown".into());
+    format!(
+        "another process is still writing this configuration: waited {}s for {} (holder: {}). \
+         Retry, or stop the process holding it; the lock file alone blocks nothing.",
+        LOCK_TIMEOUT.as_secs(),
+        lock_path.display(),
+        holder
+    )
+}
+
+/// Leaves the holder's process id in the lock file for the message above. Diagnostic only:
+/// nothing reads it to decide whether the lock is held, which is the operating system's answer.
+fn record_holder(file: &fs::File) {
+    #[cfg(not(windows))]
+    {
+        use std::io::{Seek, SeekFrom};
+        let mut handle = file;
+        let _ = handle.seek(SeekFrom::Start(0));
+        let _ = file.set_len(0);
+        let _ = handle.write_all(format!("pid {}\n", std::process::id()).as_bytes());
+        let _ = file.sync_data();
+    }
+    #[cfg(windows)]
+    let _ = file;
+}
+
+/// Whether the locked file is still the one at `path`. On Windows nothing can unlink an open
+/// lock file, so there is nothing to re-check.
+fn same_lock_file(file: &fs::File, path: &Path) -> Result<bool> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let held = file.metadata()?;
+        Ok(match fs::metadata(path) {
+            Ok(current) => current.dev() == held.dev() && current.ino() == held.ino(),
+            Err(_) => false,
+        })
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (file, path);
+        Ok(true)
+    }
+}
 fn sync_parent(path: &Path) -> Result<()> {
     #[cfg(not(windows))]
     fs::File::open(path.parent().unwrap_or_else(|| Path::new(".")))?.sync_all()?;
@@ -266,9 +402,7 @@ pub fn update_host<T>(
     operation: impl FnOnce(&mut HostConfig) -> Result<T>,
 ) -> Result<T> {
     prepare_parent(path)?;
-    let lock_path = PathBuf::from(format!("{}.lock", path.display()));
-    let lock = private_lock(&lock_path)?;
-    lock.lock_exclusive()?;
+    let _lock = ConfigLock::acquire(path)?;
     let mut config: HostConfig = load(path)?;
     config.validate()?;
     let result = operation(&mut config)?;
@@ -284,9 +418,7 @@ pub fn update_host<T>(
 }
 pub fn confirm_client(path: &Path, expected: &ClientConfig) -> Result<()> {
     prepare_parent(path)?;
-    let lock_path = PathBuf::from(format!("{}.lock", path.display()));
-    let lock = private_lock(&lock_path)?;
-    lock.lock_exclusive()?;
+    let _lock = ConfigLock::acquire(path)?;
     let mut config: ClientConfig = load(path)?;
     if &config != expected {
         return Err("client configuration changed during confirmation".into());
@@ -305,9 +437,7 @@ pub fn confirm_client(path: &Path, expected: &ClientConfig) -> Result<()> {
 pub fn abandon_pending(path: &Path, expected_app: &str) -> Result<String> {
     app_id(expected_app)?;
     prepare_parent(path)?;
-    let lock_path = PathBuf::from(format!("{}.lock", path.display()));
-    let lock = private_lock(&lock_path)?;
-    lock.lock_exclusive()?;
+    let _lock = ConfigLock::acquire(path)?;
     let config: ClientConfig = load(path)?;
     if config.version != 1 || config.app_id != expected_app || config.confirmed {
         return Err("only an unconfirmed pairing for this application may be abandoned".into());
@@ -367,6 +497,129 @@ fn require_private_filesystem() -> Result<()> {
 #[cfg(windows)]
 fn prepare_parent(path: &Path) -> Result<()> {
     windows_private::prepare_parent(path)
+}
+
+#[cfg(test)]
+mod lock_tests {
+    use super::*;
+    use std::time::{Duration, Instant};
+
+    fn fixture() -> (PathBuf, PathBuf) {
+        let parent =
+            std::env::temp_dir().join(format!("tether-config-lock-{}", rand::random::<u128>()));
+        let path = parent.join("host.profile");
+        let config = HostConfig::new(
+            "test.lock",
+            BTreeMap::from([(
+                "api".into(),
+                Service {
+                    kind: ServiceKind::Tcp,
+                    target: "127.0.0.1:1234".parse().unwrap(),
+                    identity: None,
+                },
+            )]),
+        )
+        .unwrap();
+        create(&path, &config).unwrap();
+        (parent, path)
+    }
+
+    #[test]
+    fn a_live_holder_times_out_with_a_message_naming_the_lock_and_its_holder() {
+        let (parent, path) = fixture();
+        let lock_path = PathBuf::from(format!("{}.lock", path.display()));
+        // A second file description in this process conflicts exactly as another process does:
+        // flock locks the description, not the process.
+        let held = ConfigLock::acquire(&path).unwrap();
+        let started = Instant::now();
+        let error = update_host(&path, |_| Ok(()))
+            .expect_err("a live holder must not be waited on for ever");
+        let waited = started.elapsed();
+        let text = format!("{error:?}");
+        assert!(
+            text.contains("another process is still writing this configuration"),
+            "{text}"
+        );
+        assert!(text.contains(&lock_path.display().to_string()), "{text}");
+        assert!(
+            text.contains(&format!("pid {}", std::process::id())),
+            "the holder is named rather than guessed at: {text}"
+        );
+        assert!(
+            waited >= LOCK_TIMEOUT && waited < LOCK_TIMEOUT + Duration::from_secs(5),
+            "waited {waited:?}, which is not the declared timeout"
+        );
+        drop(held);
+        // With the holder gone the same write succeeds, so the timeout is a wait and not a refusal.
+        update_host(&path, |config| {
+            config.services.insert(
+                "second".into(),
+                Service {
+                    kind: ServiceKind::Udp,
+                    target: "127.0.0.1:1235".parse().unwrap(),
+                    identity: None,
+                },
+            );
+            Ok(())
+        })
+        .unwrap();
+        fs::remove_dir_all(parent).unwrap();
+    }
+
+    #[test]
+    fn the_lock_file_does_not_outlive_the_operation_that_created_it() {
+        let (parent, path) = fixture();
+        let lock_path = PathBuf::from(format!("{}.lock", path.display()));
+        assert!(!lock_path.exists(), "nothing holds a lock yet");
+        update_host(&path, |_| Ok(())).unwrap();
+        assert!(
+            !lock_path.exists(),
+            "every configuration accumulated one of these"
+        );
+        // An operation that fails inside the closure cleans up too.
+        assert!(update_host(&path, |_| Err::<(), Error>("no".into())).is_err());
+        assert!(!lock_path.exists());
+        // A leftover lock file from an older release is taken over and then removed, not waited on.
+        fs::write(&lock_path, b"pid 999999\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&lock_path, fs::Permissions::from_mode(0o600)).unwrap();
+        }
+        let started = Instant::now();
+        update_host(&path, |_| Ok(())).unwrap();
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "a lock file with no live holder blocks nothing"
+        );
+        assert!(!lock_path.exists());
+        fs::remove_dir_all(parent).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_lock_taken_on_an_already_unlinked_file_is_not_accepted() {
+        let (parent, path) = fixture();
+        let lock_path = PathBuf::from(format!("{}.lock", path.display()));
+        // The race the cleanup protocol closes: one caller opened the lock file, a previous
+        // holder unlinked it, and the open file description is all that is left. Locking that
+        // must not count, or two callers hold two locks over one configuration.
+        let orphan = private_lock(&lock_path).unwrap();
+        fs::remove_file(&lock_path).unwrap();
+        orphan.try_lock_exclusive().unwrap();
+        assert!(
+            !same_lock_file(&orphan, &lock_path).unwrap(),
+            "the file at that path is not the one this lock is on"
+        );
+        // So a real acquirer creates a fresh lock file and takes it without waiting.
+        let started = Instant::now();
+        let fresh = ConfigLock::acquire(&path).unwrap();
+        assert!(started.elapsed() < Duration::from_secs(1));
+        assert!(same_lock_file(fresh.file.as_ref().unwrap(), &lock_path).unwrap());
+        drop(fresh);
+        drop(orphan);
+        fs::remove_dir_all(parent).unwrap();
+    }
 }
 
 #[cfg(test)]

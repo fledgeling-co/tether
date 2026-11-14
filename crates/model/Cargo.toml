@@ -9,3 +9,5 @@ description = "Shared, I/O-free Tether client logic: the nearby pairing protocol
 tether-core = { path = "../core" }
 serde_json = "1.0"
 base64 = "0.22"
+# One-time nearby invite tokens. getrandom reaches the browser through the FFI's own import.
+rand_core = { version = "0.6", features = ["getrandom"] }

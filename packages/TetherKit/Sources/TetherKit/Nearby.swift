@@ -245,10 +245,18 @@ public final class TetherNearbyAnnouncement: @unchecked Sendable {
 public struct TetherNearbyInvite: Sendable, Equatable {
     public let route: TetherRoute
     public let hostName: String
+    /// The one-time token this device issued on the connection the invite arrived over. It is
+    /// repeated in `pair.nearby` so the inviting computer can tell this device from any other.
+    public let token: String
 }
 
 /// A device's invite listener, announced while "Add a computer" is open. An invite only starts
 /// an ordinary nearby pairing to the inviting address; the code comparison still decides trust.
+///
+/// Every connection is answered with a fresh one-time token, and an invite is read only when it
+/// echoes that token. So an invite has to come from something that opened a connection to this
+/// listener and read a 32-byte secret off it, and each token admits one invite. It does not
+/// identify the inviting computer: anything on the local network can open that connection.
 public final class TetherNearbyInviteListener: @unchecked Sendable {
     private let listener: NWListener
     private let appID: String
@@ -270,55 +278,109 @@ public final class TetherNearbyInviteListener: @unchecked Sendable {
 
     private static func read(_ connection: NWConnection, appID: String, onInvite: @escaping @Sendable (TetherNearbyInvite) -> Void) {
         connection.start(queue: .global())
-        connection.receive(minimumIncompleteLength: 1, maximumLength: 512) { data, _, _, _ in
-            defer { connection.cancel() }
-            guard let data, let line = data.split(separator: 10).first,
-                  let json = try? JSONSerialization.jsonObject(with: Data(line)) as? [String: Any],
-                  json["v"] as? Int == 1, json["app"] as? String == appID,
-                  let port = json["port"] as? Int, (1 ... 65535).contains(port),
-                  case let .hostPort(host, _)? = connection.currentPath?.remoteEndpoint else { return }
-            var text: String
-            switch host {
-            case let .ipv4(address): text = "\(address)"
-            case let .ipv6(address): text = "\(address)"
-            case let .name(name, _): text = name
-            @unknown default: return
+        // The challenge goes out first: an invite that does not come back carrying this token is
+        // not one this device asked for, whatever name it announces.
+        guard let token = try? Bridge.call(["command": "discovery.invite_token"])["token"] as? String,
+              let challenge = try? Bridge.call(["command": "discovery.challenge", "app": appID, "token": token])["line"] as? String
+        else { connection.cancel(); return }
+        var line = Data(challenge.utf8)
+        line.append(10)
+        connection.send(content: line, completion: .contentProcessed { error in
+            if error != nil { connection.cancel(); return }
+            connection.receive(minimumIncompleteLength: 1, maximumLength: 512) { data, _, _, _ in
+                defer { connection.cancel() }
+                guard let data, let received = data.split(separator: 10).first,
+                      let text = String(data: Data(received), encoding: .utf8),
+                      case let .hostPort(host, _)? = connection.currentPath?.remoteEndpoint else { return }
+                var remote: String
+                switch host {
+                case let .ipv4(address): remote = "\(address)"
+                case let .ipv6(address): remote = "\(address)"
+                case let .name(name, _): remote = name
+                @unknown default: return
+                }
+                if let percent = remote.firstIndex(of: "%"), !remote.contains(":") { remote = String(remote[..<percent]) }
+                guard let answer = try? Bridge.call(["command": "discovery.read_invite", "app": appID,
+                                                     "line": text, "remote": remote, "token": token]),
+                      let invite = answer["invite"] as? [String: Any],
+                      let port = invite["port"] as? Int, (1 ... 65535).contains(port),
+                      let resolved = invite["host"] as? String
+                else { return }
+                onInvite(TetherNearbyInvite(route: .privateNetwork(host: resolved, port: UInt16(port)),
+                                            hostName: cleanLabel(invite["name"] as? String, fallback: "Computer"),
+                                            token: token))
             }
-            if let percent = text.firstIndex(of: "%"), !text.contains(":") { text = String(text[..<percent]) }
-            onInvite(TetherNearbyInvite(route: .privateNetwork(host: text, port: UInt16(port)),
-                                        hostName: cleanLabel(json["name"] as? String, fallback: "Computer")))
-        }
+        })
     }
 
     public func stop() { listener.cancel() }
     deinit { listener.cancel() }
 
-    /// Sent by a host to a device it found: "pair with me at this port".
-    public static func invite(_ peer: TetherNearbyPeer, appID: String, hostName: String, port: UInt16) async throws {
+    /// Sent by a host to a device it found: "pair with me at this port". Returns the one-time
+    /// token the device issued on this connection, which that device repeats in `pair.nearby`.
+    /// Hold it until the request arrives: it is what tells this device's request from another's.
+    ///
+    /// The device writes its token first, so nothing is sent until one has been read. A peer that
+    /// writes no challenge — an older device, or anything else on the port — gets no invite and
+    /// this call fails on the deadline rather than waiting.
+    @discardableResult
+    public static func invite(_ peer: TetherNearbyPeer, appID: String, hostName: String, port: UInt16) async throws -> String {
         try Bridge.validateScope(appID)
         let connection = NWConnection(to: peer.endpoint, using: .tcp)
-        defer { connection.cancel() }
-        guard let text = try Bridge.call(["command": "discovery.invite", "app": appID, "name": hostName, "port": Int(port)])["line"] as? String
-        else { throw TetherError.invalidResponse }
-        var line = Data(text.utf8)
-        line.append(10)
-        let payload = line
-        try await withTetherDeadline(seconds: 6) {
-            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-                let once = OnceResume(continuation)
-                connection.stateUpdateHandler = { state in
-                    switch state {
-                    case .ready:
-                        connection.send(content: payload, completion: .contentProcessed { error in
-                            if let error { once.resume(throwing: error) } else { once.resume(returning: ()) }
-                        })
-                    case let .failed(error): once.resume(throwing: error)
-                    case .cancelled: once.resume(throwing: TetherClientError.connectionClosed)
-                    default: break
+        // A peer that never writes a challenge must cost a deadline, not the caller. The timeout
+        // cancels the connection first, which drives the handler to `.cancelled` and releases the
+        // exchange: a deadline that only threw would leave this waiting on a parked continuation.
+        return try await withTaskCancellationHandler {
+            do {
+                let token = try await withThrowingTaskGroup(of: String.self) { group in
+                    group.addTask { try await exchange(connection, appID: appID, hostName: hostName, port: port) }
+                    group.addTask {
+                        try? await Task.sleep(for: .seconds(6))
+                        connection.cancel()
+                        throw TetherClientError.timeout
                     }
+                    defer { group.cancelAll() }
+                    guard let first = try await group.next() else { throw TetherClientError.connectionClosed }
+                    return first
                 }
-                connection.start(queue: .global())
+                connection.cancel()
+                return token
+            } catch {
+                connection.cancel()
+                throw error
             }
+        } onCancel: {
+            connection.cancel()
+        }
+    }
+
+    /// Reads the device's challenge, then writes the invite echoing its token.
+    private static func exchange(_ connection: NWConnection, appID: String, hostName: String, port: UInt16) async throws -> String {
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<String, Error>) in
+            let once = OnceResume(continuation)
+            connection.stateUpdateHandler = { state in
+                switch state {
+                case .ready:
+                    connection.receive(minimumIncompleteLength: 1, maximumLength: 512) { data, _, _, error in
+                        guard let data, let received = data.split(separator: 10).first,
+                              let challenge = String(data: Data(received), encoding: .utf8),
+                              let issued = try? Bridge.call(["command": "discovery.read_challenge", "app": appID,
+                                                             "line": challenge])["token"] as? String,
+                              let line = try? Bridge.call(["command": "discovery.invite", "app": appID, "name": hostName,
+                                                           "port": Int(port), "token": issued])["line"] as? String
+                        else { once.resume(throwing: error ?? TetherError.invalidResponse); return }
+                        var payload = Data(line.utf8)
+                        payload.append(10)
+                        connection.send(content: payload, completion: .contentProcessed { sendError in
+                            if let sendError { once.resume(throwing: sendError) } else { once.resume(returning: issued) }
+                        })
+                    }
+                case let .failed(error): once.resume(throwing: error)
+                case .cancelled: once.resume(throwing: TetherClientError.connectionClosed)
+                default: break
+                }
+            }
+            connection.start(queue: .global())
         }
     }
 }
@@ -373,10 +435,11 @@ public final class TetherNearbyPairing {
     /// Starts pairing because a computer invited this device.
     public func accept(_ invite: TetherNearbyInvite) {
         guard !isActive else { return }
-        begin(peerName: invite.hostName, incoming: true) { invite.route }
+        begin(peerName: invite.hostName, incoming: true, inviteToken: invite.token) { invite.route }
     }
 
-    private func begin(peerName: String, incoming: Bool, route: @escaping @Sendable () async throws -> TetherRoute) {
+    private func begin(peerName: String, incoming: Bool, inviteToken: String? = nil,
+                       route: @escaping @Sendable () async throws -> TetherRoute) {
         guard !isActive else { return }
         answer = nil; shownAt = nil
         state = .checking(peer: peerName)
@@ -385,6 +448,7 @@ public final class TetherNearbyPairing {
             do {
                 let route = try await route()
                 let outcome = try await store.pairNearby(route: route, deviceName: name, deviceKind: kind,
+                    inviteToken: inviteToken,
                     onCode: { code in
                         await MainActor.run {
                             self?.shownAt = Date()

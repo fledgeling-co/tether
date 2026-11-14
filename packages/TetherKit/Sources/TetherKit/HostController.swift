@@ -154,6 +154,10 @@
         public let expiresAt: Date
         /// The device's owner has already approved the same code.
         public let deviceApproved: Bool
+        /// The one-time token this device echoed from an invite, when it answered one. Compare it
+        /// against the token `invite(_:hostName:)` returned to tell the device this Mac invited
+        /// from any other device that happens to be pairing; an announced name is not evidence.
+        public let inviteToken: String?
     }
 
     /// Owns the helper's stdin and lifetime. It reads only safe helper output, never the private
@@ -339,9 +343,12 @@
         }
 
         /// Invites a device from the nearby list. It connects back and both screens show the code.
-        public func invite(_ peer: TetherNearbyPeer, hostName: String) async throws {
+        /// Invites a nearby device. Returns the one-time token that device issued; a request
+        /// carrying it is the one that answered this invite.
+        @discardableResult
+        public func invite(_ peer: TetherNearbyPeer, hostName: String) async throws -> String {
             guard let nearbyPort, ownerActive, allowsNearby else { throw TetherHostControllerError.helperFailed }
-            try await TetherNearbyInviteListener.invite(peer, appID: appID, hostName: hostName, port: nearbyPort)
+            return try await TetherNearbyInviteListener.invite(peer, appID: appID, hostName: hostName, port: nearbyPort)
         }
 
         public func decideNearby(_ request: TetherNearbyRequest, approve: Bool) async throws {
@@ -376,6 +383,7 @@
                 struct Item: Decodable {
                     let id: UInt64; let name: String; let kind: String; let code: String
                     let expires_in_seconds: Int; let client_approved: Bool; let decision: Bool?
+                    let invite_token: String?
                 }
                 let allow: Bool; let closed: String?; let requests: [Item]
             }
@@ -387,7 +395,8 @@
                       (0 ... 60).contains(item.expires_in_seconds) else { return nil }
                 return TetherNearbyRequest(id: item.id, name: String(item.name.prefix(48)), kind: String(item.kind.prefix(48)),
                                            code: code, expiresAt: Date().addingTimeInterval(Double(item.expires_in_seconds)),
-                                           deviceApproved: item.client_approved)
+                                           deviceApproved: item.client_approved,
+                                           inviteToken: item.invite_token)
             }
         }
 

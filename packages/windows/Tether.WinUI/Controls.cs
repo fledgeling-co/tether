@@ -87,7 +87,7 @@ public sealed class TetherClientView : UserControl
         await Run(async t=>{
             var route=invite?.Route??await TetherNearbyBrowser.RouteAsync(peer!,t);
             var pairing=store.PairNearbyAsync(route,Environment.MachineName,"PC",code=>{shown.TrySetResult(code);return displayed.Task;},()=>{hostApproved=true;return Task.CompletedTask;},()=>answer,t,
-                onStoring:()=>{DispatcherQueue.TryEnqueue(()=>{committing=true;Refresh();});return Task.CompletedTask;});
+                onStoring:()=>{DispatcherQueue.TryEnqueue(()=>{committing=true;Refresh();});return Task.CompletedTask;},inviteToken:invite?.Token);
             var first=await Task.WhenAny(pairing,shown.Task);if(first==pairing){await pairing;return;}
             // The core decides the words and when Approve is enabled; the flow enforces the same rules again.
             var code=shown.Task.Result;var incoming=invite!=null;var codeText=new TextBlock{Text=code[..3]+" "+code[3..],FontSize=32,FontFamily=new Microsoft.UI.Xaml.Media.FontFamily("Cascadia Mono, Consolas"),IsTextSelectionEnabled=false};
@@ -141,7 +141,9 @@ public sealed class TetherHostView : UserControl
     private readonly TextBox serviceId=Controls.Field("Service ID","tether.host.serviceId","api"),target=Controls.Field("Fixed loopback target port","tether.host.targetPort","8882"),listen=Controls.Field("Listen address","tether.host.listenAddress","127.0.0.1"),port=Controls.Field("Listen port","tether.host.listenPort","7445"),relay=Controls.Field("Relay URL (wss)","tether.host.relay");
     private readonly ComboBox kind=new(){Header="Service transport",ItemsSource=new[]{"TCP","UDP"},SelectedIndex=0},route=new(){Header="Host route",ItemsSource=new[]{"Private network or VPN","Cloud relay"},SelectedIndex=0};
     private readonly StackPanel profileCreator;private readonly TextBlock profileSummary=Controls.Text("");private readonly Button initialize,start,stop,open,revoke;private readonly DispatcherTimer timer=new(){Interval=TimeSpan.FromSeconds(2)};private bool busy,ticking,asking,rendering;private CancellationTokenSource? operation;
-    private readonly TetherNearbyBrowser devices;private readonly ListView nearbyDevices=new(){MaxHeight=180};private readonly ToggleSwitch allowNearby=new(){Header=TetherCopy.String("host_allow"),IsOn=true};private readonly TextBlock nearbySafety=Controls.Text("");private readonly HashSet<string> invited=new();
+    private readonly TetherNearbyBrowser devices;private readonly ListView nearbyDevices=new(){MaxHeight=180};private readonly ToggleSwitch allowNearby=new(){Header=TetherCopy.String("host_allow"),IsOn=true};private readonly TextBlock nearbySafety=Controls.Text("");
+    /// One-time tokens this PC's own invites returned, not device names: a name can be announced by anyone.
+    private readonly HashSet<string> invited=new();
     public TetherHostView(TetherHostController host)
     {
         this.host=host;devices=new TetherNearbyBrowser(host.AppId,NearbyService.Device);AutomationProperties.SetAutomationId(clients,"tether.clients");AutomationProperties.SetName(clients,"Authorized clients");AutomationProperties.SetName(route,"Host route");AutomationProperties.SetName(kind,"Service transport");
@@ -155,7 +157,7 @@ public sealed class TetherHostView : UserControl
         var connection=Controls.Form("Listener route",Controls.Stack(Controls.Text("Listen on 0.0.0.0 so nearby devices can find this PC."),route,listen,port,relay),"tether.host.route");
         allowNearby.Toggled+=async(_,_)=>{if(rendering)return;try{await host.SetAllowsNearbyAsync(allowNearby.IsOn);}catch{error.Text="Could not change whether new devices may ask.";}};AutomationProperties.SetAutomationId(allowNearby,"tether.host.allowNearby");
         AutomationProperties.SetAutomationId(nearbyDevices,"tether.host.nearby");AutomationProperties.SetName(nearbyDevices,"Devices nearby");
-        var invite=Controls.Button(TetherCopy.String("host_connect"),"tether.host.invite",async(_,_)=>{if(nearbyDevices.SelectedItem is ListViewItem row&&row.Tag is string id&&devices.Peers.FirstOrDefault(p=>p.Id==id) is{} peer){invited.Add(peer.Name);await Run(t=>host.InviteAsync(peer,Environment.MachineName,t));}});
+        var invite=Controls.Button(TetherCopy.String("host_connect"),"tether.host.invite",async(_,_)=>{if(nearbyDevices.SelectedItem is ListViewItem row&&row.Tag is string id&&devices.Peers.FirstOrDefault(p=>p.Id==id) is{} peer)await Run(async t=>{invited.Add(await host.InviteAsync(peer,Environment.MachineName,t));});});
         var nearbySection=Controls.Form(TetherCopy.String("host_section"),Controls.Stack(allowNearby,nearbySafety,Controls.Text(TetherCopy.String("host_empty")+" "+TetherCopy.String("host_footer")),nearbyDevices,invite),"tether.host.nearby.form");nearbySection.IsExpanded=true;
         devices.Changed+=()=>DispatcherQueue.TryEnqueue(Refresh);
         Content=Controls.Columns(Controls.Stack(Controls.Text("Clients",true),Controls.Text("Active and recently seen are observations from this running host. Saved permission alone does not mean online."),clients,Controls.Actions(refresh,revoke),nearbySection),Controls.Stack(Controls.Text("This host",true),identity,state,Controls.Actions(start,stop,open),pairing,connection,profile,error));
@@ -178,12 +180,12 @@ public sealed class TetherHostView : UserControl
             var message=Controls.Text("");var services=Controls.Text("");var note=Controls.Text("");var expiry=Controls.Text("");
             var dialog=new ContentDialog{XamlRoot=XamlRoot,DefaultButton=ContentDialogButton.Close,IsPrimaryButtonEnabled=false,Content=Controls.Stack(code,message,services,note,expiry)};
             var opened=DateTimeOffset.UtcNow;var tick=new DispatcherTimer{Interval=TimeSpan.FromMilliseconds(250)};
-            void Render(){var view=TetherCopy.HostRequest(request.Name,request.Code,(long)(request.ExpiresAt-DateTimeOffset.UtcNow).TotalMilliseconds,(long)(DateTimeOffset.UtcNow-opened).TotalMilliseconds,request.DeviceApproved,invited.Contains(request.Name),host.Services.Select(s=>s.Id));
+            void Render(){var view=TetherCopy.HostRequest(request.Name,request.Code,(long)(request.ExpiresAt-DateTimeOffset.UtcNow).TotalMilliseconds,(long)(DateTimeOffset.UtcNow-opened).TotalMilliseconds,request.DeviceApproved,request.InviteToken is{} echoed&&invited.Contains(echoed),host.Services.Select(s=>s.Id));
                 dialog.Title=view.Title;message.Text=view.Message;services.Text=view.Services??"";note.Text=view.Note??"";expiry.Text=view.Expiry;AutomationProperties.SetName(code,"Code "+view.Code.Spoken);
                 dialog.PrimaryButtonText=view.Primary.Label;dialog.IsPrimaryButtonEnabled=view.Primary.Enabled;dialog.CloseButtonText=view.Secondary.Label;
                 if(request.ExpiresAt<=DateTimeOffset.UtcNow||host.NearbyRequests.All(r=>r.Id!=request.Id))dialog.Hide();}
             Render();tick.Tick+=(_,_)=>Render();
-            tick.Start();var result=await dialog.ShowAsync();tick.Stop();invited.Remove(request.Name);
+            tick.Start();var result=await dialog.ShowAsync();tick.Stop();if(request.InviteToken is{} spent)invited.Remove(spent);
             if(host.NearbyRequests.Any(r=>r.Id==request.Id))try{await host.DecideNearbyAsync(request,result==ContentDialogResult.Primary);}catch{error.Text="That request has ended.";}
         }finally{asking=false;}
     }

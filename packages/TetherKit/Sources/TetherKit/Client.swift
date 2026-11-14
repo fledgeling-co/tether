@@ -309,7 +309,10 @@ public actor TetherClient {
     /// sides can show it; `onHostApproved` fires when the host's owner has approved; `decision`
     /// returns this device owner's answer, or nil while undecided. Trust is saved only after both
     /// owners approve. Cancelling the task declines the request.
+    /// `inviteToken` is the one-time token this device issued to a computer that invited it; it
+    /// is repeated to the host so the host's owner can see which request answered that invite.
     public func pairNearby(route: TetherRoute, deviceName: String, deviceKind: String,
+                           inviteToken: String? = nil,
                            onCode: @escaping @Sendable (TetherNearbyCode) async -> Void,
                            onHostApproved: @escaping @Sendable () async -> Void = {},
                            onStoring: @escaping @Sendable () async -> Void = {},
@@ -325,11 +328,13 @@ public actor TetherClient {
         do {
             // The flow applies the approval rules: an answer counts only after the code has been up
             // for a second and the decision has read undecided since it appeared; a decline wins.
-            let (flow, steps) = try TetherFlow.begin([
+            var request: [String: Any] = [
                 "command": "nearby.begin", "app": appID, "binding": session.binding.base64EncodedString(),
                 "clientKey": identity.publicKey.base64EncodedString(), "hostKey": session.peer.base64EncodedString(),
                 "name": deviceName, "kind": deviceKind,
-            ])
+            ]
+            if let inviteToken { request["inviteToken"] = inviteToken }
+            let (flow, steps) = try TetherFlow.begin(request)
             let outcome = try await drive(flow, steps, session: session, route: route, identity: identity,
                                           onCode: onCode, onHostApproved: onHostApproved, onStoring: onStoring, decision: decision)
             await session.close()

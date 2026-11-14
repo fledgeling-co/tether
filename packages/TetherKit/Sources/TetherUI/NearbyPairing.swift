@@ -425,14 +425,16 @@ public struct TetherNearbyConfirmView: View {
         let invited: Set<String>
         public func body(content: Content) -> some View {
             content.sheet(item: Binding(get: { controller.nearbyRequests.first }, set: { _ in })) { request in
-                TetherNearbyRequestView(controller: controller, request: request, invited: invited.contains(request.name))
+                TetherNearbyRequestView(controller: controller, request: request,
+                                        invited: request.inviteToken.map(invited.contains) ?? false)
                     .interactiveDismissDisabled()
             }
         }
     }
 
     public extension View {
-        /// Presents nearby pairing requests for this host. `invited` names devices this Mac invited.
+        /// Presents nearby pairing requests for this host. `invited` holds the one-time tokens
+        /// this Mac's own invites returned, not device names: a name can be announced by anyone.
         func tetherNearbyRequests(_ controller: TetherHostController, invited: Set<String> = []) -> some View {
             modifier(TetherNearbyRequestModifier(controller: controller, invited: invited))
         }
@@ -485,9 +487,13 @@ public struct TetherNearbyConfirmView: View {
         }
 
         private func connect(_ peer: TetherNearbyPeer) {
-            invited.insert(peer.name)
             Task {
-                do { try await controller.invite(peer, hostName: hostName); error = nil }
+                do {
+                    // The token the device issued for this invite, held so the request it sends
+                    // back can be recognised. Nothing is remembered when the invite never landed.
+                    invited.insert(try await controller.invite(peer, hostName: hostName))
+                    error = nil
+                }
                 catch { self.error = "Couldn't reach \(peer.name). Check it still has Add a computer open." }
             }
         }

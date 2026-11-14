@@ -15,7 +15,6 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import org.json.JSONObject
 import java.io.Closeable
 import java.net.InetSocketAddress
 import java.net.ServerSocket
@@ -104,11 +103,17 @@ class TetherNearbyBrowser(context: Context, val appId: String, private val servi
     }
 }
 
-/** An invitation a host sent: connect to this route and pair. */
-data class NearbyInvite(val route: TetherRoute, val hostName: String)
+/** An invitation a host sent: connect to this route and pair. [token] is the one-time token this device issued on the
+ *  connection the invite arrived over, repeated in `pair.nearby` so the inviting computer can tell this device's request
+ *  from any other. */
+data class NearbyInvite(val route: TetherRoute, val hostName: String, val token: String)
 
 /** This device's invite listener, announced while "Add a computer" is open. An invite only starts an ordinary nearby pairing to
- *  the inviting address; the code comparison still decides trust. */
+ *  the inviting address; the code comparison still decides trust.
+ *
+ *  Every connection is answered with a fresh one-time token and an invite is read only when it echoes that token, so an
+ *  invite has to come from something that opened a connection here and read a 32-byte secret off it, and each token admits
+ *  one invite. It does not identify the inviting computer: anything on the local network can open that connection. */
 class TetherNearbyInviteListener(context: Context, appId: String, deviceName: String, deviceKind: String, onInvite: (NearbyInvite) -> Unit) : Closeable {
     private val nsd = context.applicationContext.getSystemService(Context.NSD_SERVICE) as NsdManager
     private val server = ServerSocket(0)
@@ -133,12 +138,26 @@ class TetherNearbyInviteListener(context: Context, appId: String, deviceName: St
                 launch {
                     socket.use {
                         it.soTimeout = 3000
+                        val remote = it.inetAddress?.hostAddress ?: return@use
+                        // The challenge goes out first: an invite that does not come back carrying this token is not one
+                        // this device asked for, whatever name it announces.
+                        val token = runCatching { NativeBridge.invoke("discovery.invite_token").optString("token") }.getOrNull()
+                            ?.takeIf { value -> value.isNotEmpty() } ?: return@use
+                        val challenge = runCatching {
+                            NativeBridge.invoke("discovery.challenge", "app" to appId, "token" to token).optString("line")
+                        }.getOrNull()?.takeIf { value -> value.isNotEmpty() } ?: return@use
+                        runCatching {
+                            it.getOutputStream().write((challenge + "\n").toByteArray()); it.getOutputStream().flush()
+                        }.getOrNull() ?: return@use
                         val line = runCatching { it.getInputStream().bufferedReader().readLine() }.getOrNull()?.take(512) ?: return@use
-                        val json = runCatching { JSONObject(line) }.getOrNull() ?: return@use
-                        val port = json.optInt("port", 0)
-                        val host = it.inetAddress?.hostAddress ?: return@use
-                        if (json.optInt("v") == 1 && json.optString("app") == appId && port in 1..65535)
-                            onInvite(NearbyInvite(TetherRoute.PrivateNetwork(host, port), nearbyLabel(json.optString("name"), "Computer")))
+                        val invite = runCatching {
+                            NativeBridge.invoke("discovery.read_invite", "app" to appId, "line" to line, "remote" to remote, "token" to token)
+                                .optJSONObject("invite")
+                        }.getOrNull() ?: return@use
+                        val port = invite.optInt("port", 0)
+                        if (port in 1..65535)
+                            onInvite(NearbyInvite(TetherRoute.PrivateNetwork(invite.optString("host", remote), port),
+                                                  nearbyLabel(invite.optString("name"), "Computer"), token))
                     }
                 }
             }
@@ -172,14 +191,14 @@ class TetherNearbyPairing(private val store: TetherConnectionStore, private val 
     private var job: Job? = null
 
     fun start(peer: NearbyPeer) = begin(peer.name, false) { TetherNearbyBrowser.route(peer) }
-    fun accept(invite: NearbyInvite) { if (!state.value.isActive) begin(invite.hostName, true) { invite.route } }
+    fun accept(invite: NearbyInvite) { if (!state.value.isActive) begin(invite.hostName, true, invite.token) { invite.route } }
 
-    private fun begin(peerName: String, incoming: Boolean, route: suspend () -> TetherRoute) {
+    private fun begin(peerName: String, incoming: Boolean, inviteToken: String? = null, route: suspend () -> TetherRoute) {
         if (state.value.isActive) return
         answer = null; shownAt = 0L; mutableState.value = NearbyPairingState.Checking(peerName)
         job = scope.launch {
             mutableState.value = try {
-                val outcome = store.pairNearby(route(), deviceName, deviceKind,
+                val outcome = store.pairNearby(route(), deviceName, deviceKind, inviteToken = inviteToken,
                     onCode = { code -> shownAt = System.currentTimeMillis(); mutableState.value = NearbyPairingState.Code(code, peerName, incoming, shownAt + 60_000, false) },
                     onHostApproved = { (mutableState.value as? NearbyPairingState.Code)?.let { mutableState.value = it.copy(otherApproved = true) } },
                     decision = { answer },

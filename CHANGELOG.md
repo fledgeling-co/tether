@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.0-preview.3
+
+A nearby invite now carries a one-time token the invited device mints. The device answers every connection to its invite listener with a fresh 32-byte token, an invite is read only when it echoes that token, and the device repeats it in `pair.nearby`, so a host's owner sheet marks a request as invited by that token rather than by the name a peer announced. Both ends of an invite must be at this release: an older host sends no token and is refused, and an older device sends no challenge, so a newer host's invite never goes out. Browsing, typed-code pairing and the code comparison are unchanged, and the code comparison is still the only thing that decides trust.
+
+Writing a host configuration no longer waits for ever on another writer. `update_host`, `confirm_client` and `abandon_pending` take the lock with a ten-second bound and then fail with a message naming the lock file and the process holding it, and the lock file is removed by its holder instead of accumulating beside every configuration. A lock file with no live holder never blocked anything and still does not; what changed is that a live holder is now a bounded wait and a readable error.
+
+Windows packages are published as release assets for the first time: `Fledgeling.Tether.Windows` and `Fledgeling.Tether.WinUI` at `0.1.0-preview.3`, carrying the Windows x64 `tether_ffi.dll` and `tether.exe`, so a consumer references the SDK without a Rust toolchain. Apple packages still cover macOS 14 and iOS 17, and the prebuilt bridge in this release is built at those floors.
+
 ## 0.1.0-preview.2
 
 Apple packages now cover macOS 14 and iOS 17 as well as later releases; the Swift sources build at those floors and the native bridge is built for them. Nearby pairing and typed-code pairing run on one shared Rust flow in every kit, the copy on every Tether screen comes from the shared core, and a browser kit (`packages/web`) pairs through the relay.

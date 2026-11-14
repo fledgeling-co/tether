@@ -152,16 +152,30 @@ pub enum NearbyOutcome {
 }
 
 /// Pairs by comparing a code shown on both devices. `on_code` receives the six digits to show;
+/// What a pairing device says about itself, and the invite it is answering.
+pub struct NearbyDevice<'a> {
+    /// A label for the host owner's screen. Shown beside the code, never trusted.
+    pub name: &'a str,
+    pub kind: &'a str,
+    /// The one-time token this device issued to a computer that invited it, when it answered an
+    /// invite. Repeated to the host so its owner can see which request answered that invite.
+    pub invite_token: Option<&'a str>,
+}
+
 /// `decision` carries this device owner's answer while the host owner decides independently.
 pub async fn pair_nearby(
     path: &Path,
     app: &str,
     route: Route,
-    name: &str,
-    kind: &str,
+    device: NearbyDevice<'_>,
     on_code: impl FnOnce(&str),
     mut decision: tokio::sync::watch::Receiver<Option<bool>>,
 ) -> Result<NearbyOutcome> {
+    let NearbyDevice {
+        name,
+        kind,
+        invite_token,
+    } = device;
     use tether_model::nearby::{Action, NearbyClient, Outcome};
     storage::app_id(app)?;
     if path.exists() {
@@ -189,6 +203,7 @@ pub async fn pair_nearby(
         session.peer,
         name,
         kind,
+        invite_token,
     )?;
     let mut on_code = Some(on_code);
     let mut config = None;
