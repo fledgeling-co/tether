@@ -2,7 +2,7 @@
   <PropertyGroup>
     <TargetFramework>net8.0</TargetFramework>
     <Nullable>enable</Nullable><ImplicitUsings>enable</ImplicitUsings><LangVersion>12</LangVersion>
-    <PackageId>Fledgeling.Tether.Windows</PackageId><Version>0.1.0-preview.3</Version>
+    <PackageId>Fledgeling.Tether.Windows</PackageId><Version>0.1.0-preview.4</Version>
     <Description>App-scoped Tether Windows SDK using the shared Rust Noise and PAKE core.</Description>
     <AllowUnsafeBlocks>false</AllowUnsafeBlocks>
   </PropertyGroup>

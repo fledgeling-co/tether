@@ -9,9 +9,14 @@ using System.Text.Json;
 namespace Tether;
 
 public enum HostRunState { Stopped,Starting,Listening,RelayConnected,RelayDisconnected,Failed,Stopping }
-public sealed record HostServiceProfile(string Id,ServiceKind Kind,string LoopbackAddress,ushort Port)
+/// <summary>A fixed loopback target the owner registers. <paramref name="IdentityKeyFile"/> is an absolute path to a private file
+/// holding a 32-byte key the service also holds; when set, the host proves the connecting device to the service before forwarding
+/// any application byte — the service sends a challenge and the host answers with the device's public key and an HMAC under this
+/// key. TCP only, as with the Swift SDK's <c>identityKeyFile</c>.</summary>
+public sealed record HostServiceProfile(string Id,ServiceKind Kind,string LoopbackAddress,ushort Port,string? IdentityKeyFile=null)
 {
     internal string Argument {get{Scope.Validate(Id);if(!IPAddress.TryParse(LoopbackAddress,out var address)||!IPAddress.IsLoopback(address)||Port==0)throw new TetherException(TetherError.InvalidRoute);return Id+"="+(Kind==ServiceKind.Tcp?"tcp":"udp")+"://"+(address.AddressFamily==System.Net.Sockets.AddressFamily.InterNetworkV6?"["+address+"]":address.ToString())+":"+Port;}}
+    internal IReadOnlyList<string> IdentityArguments {get{if(IdentityKeyFile is null)return Array.Empty<string>();Scope.Validate(Id);if(Kind!=ServiceKind.Tcp||IdentityKeyFile.Length is 0 or>32767||IdentityKeyFile.Any(char.IsControl)||!Path.IsPathFullyQualified(IdentityKeyFile))throw new TetherException(TetherError.InvalidRoute);return new[]{"--identify",Id+"="+IdentityKeyFile};}}
 }
 public sealed record HostRoute(string Mode,string? Address=null,ushort Port=0,string? RelayUrl=null)
 {
@@ -75,11 +80,16 @@ public sealed class TetherHostController : INotifyPropertyChanged,IAsyncDisposab
     }
     private static void TryKill(Process p){try{if(!p.HasExited)p.Kill(entireProcessTree:true);}catch(InvalidOperationException){}}
     private string[] Scoped(string command)=>new[]{"host",command,"--config",ProfilePath,"--expected-app",AppId};
+    /// <summary>The create-only argument vector: every service, then every identified service's key file, as the Swift SDK orders them.</summary>
+    internal static List<string> InitArguments(string profilePath,string appId,IReadOnlyList<HostServiceProfile> services)
+    {
+        var arguments=new List<string>{"host","init","--config",profilePath,"--app",appId};foreach(var service in services){arguments.Add("--service");arguments.Add(service.Argument);}foreach(var service in services)arguments.AddRange(service.IdentityArguments);return arguments;
+    }
     public async Task InitializeAsync(IReadOnlyList<HostServiceProfile> services,CancellationToken token=default)
     {
         if(!await mutation.WaitAsync(0,token))throw new TetherException(TetherError.Busy);
         try{EnsureOpen();if(process!=null||services.Count is <1 or >32||services.Select(s=>s.Id).Distinct(StringComparer.Ordinal).Count()!=services.Count)throw new TetherException(TetherError.InvalidScope);PrivateFiles.PrepareDirectory(Path.GetDirectoryName(ProfilePath)!);
-            var arguments=new List<string>{"host","init","--config",ProfilePath,"--app",AppId};foreach(var service in services){arguments.Add("--service");arguments.Add(service.Argument);}
+            var arguments=InitArguments(ProfilePath,AppId,services);
             // Init is create-only. It emits no secret-bearing output and never resets a profile.
             using var p=new Process{StartInfo=StartInfo(arguments)};if(!p.Start())throw new TetherException(TetherError.Unavailable);using var linked=CancellationTokenSource.CreateLinkedTokenSource(token,controllerLifetime.Token);using var d=Deadline.Start(linked.Token);var a=Drain(p.StandardOutput.BaseStream,d.Token);var b=Drain(p.StandardError.BaseStream,d.Token);try{await p.WaitForExitAsync(d.Token).ConfigureAwait(false);await Task.WhenAll(a,b);if(p.ExitCode!=0)throw new TetherException(TetherError.Storage);}finally{if(!p.HasExited)p.Kill(entireProcessTree:true);}await InspectAsync(token);
         }finally{mutation.Release();}

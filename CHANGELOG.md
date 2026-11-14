@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.0-preview.4
+
+A .NET host can now ask for the peer-identity proof. `HostServiceProfile` takes an `IdentityKeyFile` — an absolute path to the private 32-byte key file the service also holds — and `host init` emits `--identify <id>=<path>` for every service that carries one, so a Windows host proves the connecting device to its service before any application byte reaches it. The Rust CLI and the Swift SDK's `identityKeyFile` already did this; a .NET host had to run `tether.exe host init --identify` itself. TCP only, and a relative path, a URL or a UDP service is refused, as on Swift. Nothing changes for a profile without a key file.
+
+Windows packages move to `0.1.0-preview.4`; the Apple packages and their prebuilt bridge are rebuilt at the same macOS 14 and iOS 17 floors.
+
 ## 0.1.0-preview.3
 
 A nearby invite now carries a one-time token the invited device mints. The device answers every connection to its invite listener with a fresh 32-byte token, an invite is read only when it echoes that token, and the device repeats it in `pair.nearby`, so a host's owner sheet marks a request as invited by that token rather than by the name a peer announced. Both ends of an invite must be at this release: an older host sends no token and is refused, and an older device sends no challenge, so a newer host's invite never goes out. Browsing, typed-code pairing and the code comparison are unchanged, and the code comparison is still the only thing that decides trust.

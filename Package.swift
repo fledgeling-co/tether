@@ -8,8 +8,8 @@ let bridge: Target = FileManager.default.fileExists(atPath: root.appendingPathCo
     ? .binaryTarget(name: "TetherFFI", path: localBridge)
     : .binaryTarget(
         name: "TetherFFI",
-        url: "https://github.com/fledgeling-co/tether/releases/download/v0.1.0-preview.3/TetherFFI.xcframework.zip",
-        checksum: "a25dd1975dce3bae42987d4e970fe680cae6450a061cfdce31ad376f279ae299")
+        url: "https://github.com/fledgeling-co/tether/releases/download/v0.1.0-preview.4/TetherFFI.xcframework.zip",
+        checksum: "456e6629a107ded761417cf40fc0ba4ff80c140cdd4fd0e2795dbf2cfcdb77bf")
 
 let package = Package(
     name: "Tether",
