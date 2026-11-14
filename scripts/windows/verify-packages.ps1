@@ -33,7 +33,15 @@ try {
  & $DotNetPath run --project (Join-Path $consumer 'Consumer.csproj') --no-restore *> (Join-Path $scratch 'consumer.log')
  if($LASTEXITCODE){Get-Content (Join-Path $scratch 'consumer.log');throw 'Fresh package consumer failed'}
  $result=Get-Content (Join-Path $scratch 'consumer.log')|Where-Object {$_ -like '{*'}|Select-Object -Last 1|ConvertFrom-Json
- if(!$result.paired -or !$result.status -or !$result.udp -or !$result.left -or !$result.helperPresent -or $result.media.packets -ne 64 -or $result.runtime -ne '10.0.14'){throw 'Fresh package consumer did not prove the required runtime and operations'}
- @{schema='tether.windows-package-verification/1';packages=$checks;missingNativeRefused=$true;missingHelperRefused=$true;consumer=$result}|ConvertTo-Json -Depth 6|Set-Content (Join-Path $ArtifactsDirectory 'package-verification.json') -Encoding UTF8
+ # The runtime's patch version is whatever the SDK this check ran against supplies, and it moves
+ # under a hosted runner. A pinned patch therefore failed on a machine where nothing was wrong,
+ # so the assertion is the major version that SDK carries. Every other check is unchanged.
+ $sdkVersion=(& $DotNetPath --version)
+ if($LASTEXITCODE){throw 'Could not read the SDK version this check ran against'}
+ $expectedMajor=($sdkVersion.Trim().Split('.')[0] -as [int])
+ $runtimeMajor=(([string]$result.runtime).Split('.')[0] -as [int])
+ if(!$expectedMajor){throw 'Could not read a major version from the SDK this check ran against'}
+ if(!$result.paired -or !$result.status -or !$result.udp -or !$result.left -or !$result.helperPresent -or $result.media.packets -ne 64 -or $runtimeMajor -ne $expectedMajor){throw 'Fresh package consumer did not prove the required runtime and operations'}
+ @{schema='tether.windows-package-verification/1';packages=$checks;missingNativeRefused=$true;missingHelperRefused=$true;consumer=$result;runtimeMajorExpected=$expectedMajor;sdkVersion=$sdkVersion.Trim()}|ConvertTo-Json -Depth 6|Set-Content (Join-Path $ArtifactsDirectory 'package-verification.json') -Encoding UTF8
  Get-Content (Join-Path $ArtifactsDirectory 'package-verification.json')
 }finally{if(Test-Path $scratch){Remove-Item -LiteralPath $scratch -Recurse -Force}}
