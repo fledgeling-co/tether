@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.0-preview.5
+
+A .NET host's `IdentityKeyFile` must now be a drive-letter rooted path on a fixed local volume, and the path is compared against its own normalized form rather than normalized for the caller. `Path.IsPathFullyQualified` accepted `\\server\share`, `\\?\C:\…` and `\\.\C:\…`, so preview.4 would have let a profile name the host's own identity key on a network share or through the device namespace; it is the host's secret, read on every connection, and it belongs on local disk. A path holding `..` or `.` is refused rather than collapsed. A plain absolute path such as `C:\ProgramData\example\identity.key` is unaffected.
+
 ## 0.1.0-preview.4
 
 A .NET host can now ask for the peer-identity proof. `HostServiceProfile` takes an `IdentityKeyFile` — an absolute path to the private 32-byte key file the service also holds — and `host init` emits `--identify <id>=<path>` for every service that carries one, so a Windows host proves the connecting device to its service before any application byte reaches it. The Rust CLI and the Swift SDK's `identityKeyFile` already did this; a .NET host had to run `tether.exe host init --identify` itself. TCP only, and a relative path, a URL or a UDP service is refused, as on Swift. Nothing changes for a profile without a key file.

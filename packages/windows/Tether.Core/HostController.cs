@@ -9,14 +9,25 @@ using System.Text.Json;
 namespace Tether;
 
 public enum HostRunState { Stopped,Starting,Listening,RelayConnected,RelayDisconnected,Failed,Stopping }
-/// <summary>A fixed loopback target the owner registers. <paramref name="IdentityKeyFile"/> is an absolute path to a private file
-/// holding a 32-byte key the service also holds; when set, the host proves the connecting device to the service before forwarding
-/// any application byte — the service sends a challenge and the host answers with the device's public key and an HMAC under this
-/// key. TCP only, as with the Swift SDK's <c>identityKeyFile</c>.</summary>
+/// <summary>A fixed loopback target the owner registers. <paramref name="IdentityKeyFile"/> is a drive-letter rooted path on a
+/// fixed local volume, naming a private file that holds a 32-byte key the service also holds; when set, the host proves the
+/// connecting device to the service before forwarding any application byte — the service sends a challenge and the host answers
+/// with the device's public key and an HMAC under this key. TCP only, as with the Swift SDK's <c>identityKeyFile</c>. A UNC share,
+/// a <c>\\?\</c> or <c>\\.\</c> device path, a path holding <c>..</c> and a relative path are all refused: the key is the host's
+/// own secret, so it is never read across a network or through a device namespace.</summary>
 public sealed record HostServiceProfile(string Id,ServiceKind Kind,string LoopbackAddress,ushort Port,string? IdentityKeyFile=null)
 {
     internal string Argument {get{Scope.Validate(Id);if(!IPAddress.TryParse(LoopbackAddress,out var address)||!IPAddress.IsLoopback(address)||Port==0)throw new TetherException(TetherError.InvalidRoute);return Id+"="+(Kind==ServiceKind.Tcp?"tcp":"udp")+"://"+(address.AddressFamily==System.Net.Sockets.AddressFamily.InterNetworkV6?"["+address+"]":address.ToString())+":"+Port;}}
-    internal IReadOnlyList<string> IdentityArguments {get{if(IdentityKeyFile is null)return Array.Empty<string>();Scope.Validate(Id);if(Kind!=ServiceKind.Tcp||IdentityKeyFile.Length is 0 or>32767||IdentityKeyFile.Any(char.IsControl)||!Path.IsPathFullyQualified(IdentityKeyFile))throw new TetherException(TetherError.InvalidRoute);return new[]{"--identify",Id+"="+IdentityKeyFile};}}
+    internal IReadOnlyList<string> IdentityArguments {get{if(IdentityKeyFile is null)return Array.Empty<string>();Scope.Validate(Id);var path=IdentityKeyFile;if(Kind!=ServiceKind.Tcp||!LocalFixedFilePath(path))throw new TetherException(TetherError.InvalidRoute);return new[]{"--identify",Id+"="+path};}}
+    private static bool LocalFixedFilePath(string path)
+    {
+        // A UNC root, a device namespace and any unnormalized segment are refused before the volume is read.
+        if(path.Length is <4 or >32767||path.Any(char.IsControl))return false;
+        if(path.StartsWith(@"\\",StringComparison.Ordinal)||path.StartsWith("//",StringComparison.Ordinal))return false;
+        if(!char.IsAsciiLetter(path[0])||path[1]!=':'||path[2]!='\\')return false;
+        try{if(Path.GetFullPath(path)!=path)return false;}catch(Exception error)when(error is ArgumentException or NotSupportedException or PathTooLongException){return false;}
+        try{return new DriveInfo(path[..3]).DriveType==DriveType.Fixed;}catch(ArgumentException){return false;}
+    }
 }
 public sealed record HostRoute(string Mode,string? Address=null,ushort Port=0,string? RelayUrl=null)
 {
