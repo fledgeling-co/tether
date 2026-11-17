@@ -282,5 +282,64 @@
                 Issue.record("foreign app configuration started")
             } catch TetherHostControllerError.invalidStatus {}
         }
+
+        @Test func loopbackRelayRequiresExplicitTestingOptInAndIPHost() async throws {
+            let v4 = try #require(URL(string: "ws://127.0.0.1:8787"))
+            let v6 = try #require(URL(string: "ws://[::1]:8787"))
+            #expect(throws: TetherHostControllerError.invalidProfile) {
+                try TetherHostRoute.cloud(relayURL: v4).arguments()
+            }
+            #expect(throws: TetherHostControllerError.invalidProfile) {
+                try TetherHostRoute.cloud(relayURL: v6).arguments()
+            }
+            #expect(try TetherHostRoute.cloud(relayURL: v4).arguments(allowLoopback: true) == ["--relay", "ws://127.0.0.1:8787", "--allow-loopback-dev"])
+            #expect(try TetherHostRoute.cloud(relayURL: v6).arguments(allowLoopback: true) == ["--relay", "ws://[::1]:8787", "--allow-loopback-dev"])
+            #expect(try TetherHostRoute.cloud(relayURL: #require(URL(string: "wss://relay.example/tether"))).arguments(allowLoopback: true) == ["--relay", "wss://relay.example/tether"])
+
+            for rejected in ["ws://example.com:8787", "ws://192.168.1.5:8787", "ws://localhost:8787", "ws://127.0.0.1:8787?q=1", "ws://127.0.0.1:8787#frag"] {
+                let url = try #require(URL(string: rejected))
+                #expect(throws: TetherHostControllerError.invalidProfile) {
+                    try TetherHostRoute.cloud(relayURL: url).arguments(allowLoopback: true)
+                }
+            }
+
+            let defaultHelper = OwnerHelperFixture()
+            let defaultController = try TetherHostController(helper: defaultHelper, configurationURL: URL(fileURLWithPath: "/tmp/synthetic-host.json"),
+                                                             appID: "app.host.tests")
+            do {
+                try await defaultController.start(route: .cloud(relayURL: v4))
+                Issue.record("default host controller accepted plaintext loopback relay")
+            } catch TetherHostControllerError.invalidProfile {}
+
+            let testingHelper = OwnerHelperFixture()
+            let testingController = try TetherHostController(helper: testingHelper, configurationURL: URL(fileURLWithPath: "/tmp/synthetic-host.json"),
+                                                             appID: "app.host.tests", allowInsecureLoopbackForTesting: true)
+            try await testingController.start(route: .cloud(relayURL: v4))
+            await testingHelper.event("registered", id: String(repeating: "a", count: 52))
+            try await wait { testingController.state == .relayConnected(hostID: String(repeating: "a", count: 52)) }
+            let calls = await testingHelper.calls()
+            let run = try #require(calls.0.first { $0.contains("run") })
+            #expect(run.contains("--relay") && run.contains("ws://127.0.0.1:8787") && run.contains("--allow-loopback-dev"))
+            await testingController.stop()
+
+            let v6Helper = OwnerHelperFixture()
+            let v6Controller = try TetherHostController(helper: v6Helper, configurationURL: URL(fileURLWithPath: "/tmp/synthetic-host.json"),
+                                                        appID: "app.host.tests", allowInsecureLoopbackForTesting: true)
+            try await v6Controller.start(route: .cloud(relayURL: v6))
+            await v6Helper.event("registered", id: String(repeating: "a", count: 52))
+            try await wait { v6Controller.state == .relayConnected(hostID: String(repeating: "a", count: 52)) }
+            let v6Calls = await v6Helper.calls()
+            let v6Run = try #require(v6Calls.0.first { $0.contains("run") })
+            #expect(v6Run.contains("--relay") && v6Run.contains("ws://[::1]:8787") && v6Run.contains("--allow-loopback-dev"))
+            await v6Controller.stop()
+
+            for rejected in ["ws://example.com:8787", "ws://192.168.1.5:8787"] {
+                let url = try #require(URL(string: rejected))
+                do {
+                    try await testingController.start(route: .cloud(relayURL: url))
+                    Issue.record("testing host controller accepted non-loopback ws relay \(rejected)")
+                } catch TetherHostControllerError.invalidProfile {}
+            }
+        }
     }
 #endif

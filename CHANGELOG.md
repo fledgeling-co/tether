@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.0-preview.6
+
+`TetherHostController` on macOS now takes `allowInsecureLoopbackForTesting: Bool = false`, matching `TetherClient`, the .NET `TetherHostController` and the `tether` CLI. When enabled, `TetherHostRoute.cloud(relayURL:)` accepts `ws://` URLs targeting `127.0.0.1`, `[::1]` or `::1` and emits `--allow-loopback-dev` to the helper; when disabled (the default), only `wss://` is accepted, and non-loopback `ws://`, `localhost`, credentials, queries and fragments are refused in both modes.
+
+Windows packages move to `0.1.0-preview.6` and the Apple prebuilt bridge is rebuilt at the same macOS 14 and iOS 17 floors.
+
 ## 0.1.0-preview.5
 
 A .NET host's `IdentityKeyFile` must now be a drive-letter rooted path on a fixed local volume, and the path is compared against its own normalized form rather than normalized for the caller. `Path.IsPathFullyQualified` accepted `\\server\share`, `\\?\C:\…` and `\\.\C:\…`, so preview.4 would have let a profile name the host's own identity key on a network share or through the device namespace; it is the host's secret, read on every connection, and it belongs on local disk. A path holding `..` or `.` is refused rather than collapsed. A plain absolute path such as `C:\ProgramData\example\identity.key` is unaffected.

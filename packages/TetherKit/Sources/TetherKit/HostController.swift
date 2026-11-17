@@ -41,17 +41,23 @@
         case privateNetwork(address: String, port: UInt16)
         case cloud(relayURL: URL)
 
-        func arguments() throws -> [String] {
+        func arguments(allowLoopback: Bool = false) throws -> [String] {
             switch self {
             case .privateNetwork: return try ["--direct", socketAddress()]
             case let .cloud(url):
-                guard let parts = URLComponents(url: url, resolvingAgainstBaseURL: false), parts.scheme == "wss",
-                      parts.host?.isEmpty == false, parts.user == nil, parts.password == nil,
+                guard let parts = URLComponents(url: url, resolvingAgainstBaseURL: false),
+                      let host = parts.host, !host.isEmpty, parts.user == nil, parts.password == nil,
                       parts.query == nil, parts.fragment == nil, url.absoluteString.utf8.count <= 2048
                 else {
                     throw TetherHostControllerError.invalidProfile
                 }
-                return ["--relay", url.absoluteString]
+                if parts.scheme == "wss" {
+                    return ["--relay", url.absoluteString]
+                }
+                if allowLoopback, parts.scheme == "ws", ["127.0.0.1", "::1", "[::1]"].contains(host) {
+                    return ["--relay", url.absoluteString, "--allow-loopback-dev"]
+                }
+                throw TetherHostControllerError.invalidProfile
             }
         }
 
@@ -187,6 +193,7 @@
         @ObservationIgnored private var ownerActive = false
         @ObservationIgnored private let config: URL
         @ObservationIgnored private let helper: any HostHelper
+        @ObservationIgnored private let allowLoopback: Bool
         @ObservationIgnored private var launch: Task<AsyncThrowingStream<HostEvent, Error>, Error>?
         @ObservationIgnored private var observer: Task<Void, Never>?
         @ObservationIgnored private var presence: Task<Void, Never>?
@@ -195,20 +202,24 @@
         @ObservationIgnored private var pairingGeneration = UUID()
         @ObservationIgnored private var busy = false
 
-        public convenience init(helperURL: URL, configurationURL: URL, appID: String) throws {
+        public convenience init(helperURL: URL, configurationURL: URL, appID: String,
+                                allowInsecureLoopbackForTesting: Bool = false) throws {
             guard helperURL.isFileURL, helperURL.path.hasPrefix("/"),
                   FileManager.default.isExecutableFile(atPath: helperURL.path)
             else {
                 throw TetherHostControllerError.helperUnavailable
             }
-            try self.init(helper: ProcessHostHelper(executable: helperURL), configurationURL: configurationURL, appID: appID)
+            try self.init(helper: ProcessHostHelper(executable: helperURL), configurationURL: configurationURL,
+                          appID: appID, allowInsecureLoopbackForTesting: allowInsecureLoopbackForTesting)
         }
 
-        init(helper: any HostHelper, configurationURL: URL, appID: String) throws {
+        init(helper: any HostHelper, configurationURL: URL, appID: String,
+             allowInsecureLoopbackForTesting: Bool = false) throws {
             try Bridge.validateScope(appID)
             guard configurationURL.isFileURL, configurationURL.path.hasPrefix("/"),
                   configurationURL.path.utf8.count <= 4096 else { throw TetherHostControllerError.invalidProfile }
             self.helper = helper; config = configurationURL; self.appID = appID
+            allowLoopback = allowInsecureLoopbackForTesting
         }
 
         deinit { launch?.cancel(); observer?.cancel(); presence?.cancel(); expiry?.cancel(); nearbyWatch?.cancel(); announcement?.stop() }
@@ -227,7 +238,7 @@
         public func start(route: TetherHostRoute) async throws {
             try begin(); defer { busy = false }
             guard state == .stopped || state == .failed else { throw TetherHostControllerError.alreadyRunning }
-            let routeArguments = try route.arguments()
+            let routeArguments = try route.arguments(allowLoopback: allowLoopback)
             try await inspect()
             let token = UUID(); generation = token
             state = .starting

@@ -22,7 +22,7 @@ try {
  }
  $consumer=Join-Path $scratch 'consumer';New-Item -ItemType Directory -Path $consumer|Out-Null
  @'
-<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><OutputType>Exe</OutputType><TargetFramework>net10.0-windows</TargetFramework><RuntimeIdentifier>win-x64</RuntimeIdentifier><Nullable>enable</Nullable><ImplicitUsings>enable</ImplicitUsings></PropertyGroup><ItemGroup><PackageReference Include="Fledgeling.Tether.Windows" Version="0.1.0-preview.5" /></ItemGroup><ItemGroup><None Include="encoded-audio.ogg" CopyToOutputDirectory="PreserveNewest" /></ItemGroup></Project>
+<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><OutputType>Exe</OutputType><TargetFramework>net10.0-windows</TargetFramework><RuntimeIdentifier>win-x64</RuntimeIdentifier><Nullable>enable</Nullable><ImplicitUsings>enable</ImplicitUsings></PropertyGroup><ItemGroup><PackageReference Include="Fledgeling.Tether.Windows" Version="0.1.0-preview.6" /></ItemGroup><ItemGroup><None Include="encoded-audio.ogg" CopyToOutputDirectory="PreserveNewest" /></ItemGroup></Project>
 '@ | Set-Content (Join-Path $consumer 'Consumer.csproj') -Encoding UTF8
  Copy-Item (Join-Path $root 'packages/windows/verification/PackageConsumer.cs') (Join-Path $consumer 'Program.cs')
  Copy-Item (Join-Path $root 'tests/fixtures/media/audio.ogg') (Join-Path $consumer 'encoded-audio.ogg')
